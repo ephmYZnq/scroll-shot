@@ -1,6 +1,6 @@
 use crate::cli::CaptureRect;
 use crate::gui::font::draw_text;
-use crate::stitcher::{find_vertical_shift, LongCanvas};
+use crate::stitcher::{find_vertical_shift, frames_settled, LongCanvas};
 use crate::x11::capture::capture_screen_rect;
 use image::RgbaImage;
 use std::error::Error;
@@ -35,7 +35,9 @@ pub fn record_manual_scroll<C: Connection>(
         None => capture_screen_rect(conn, root, rect)?,
     };
     let mut canvas = LongCanvas::new(&frame_0);
-    let mut prev_frame = frame_0;
+    let mut keyframe = frame_0.clone();
+    let mut prev_sample = frame_0;
+    let mut still_ticks = 0;
 
     // === Create floating status bar ===
     let bar_w: i32 = 330;
@@ -170,16 +172,32 @@ pub fn record_manual_scroll<C: Connection>(
         }
 
         // Capture current state of the selection area
-        sleep(Duration::from_millis(35));
+        sleep(Duration::from_millis(25));
         let curr_frame = capture_screen_rect(conn, root, rect)?;
 
-        // Detect displacement from manual scrolling
-        let match_res = find_vertical_shift(&prev_frame, &curr_frame, Some(220));
+        // Track displacement from keyframe
+        let max_search = (rect.height as u32 * 75 / 100).min(rect.height as u32 - 40);
+        let match_res = find_vertical_shift(&keyframe, &curr_frame, Some(max_search));
 
-        if match_res.delta_y > 0 {
-            let start_y = (rect.height as u32).saturating_sub(match_res.delta_y);
-            canvas.append_rows(&curr_frame, start_y, match_res.delta_y);
-            prev_frame = curr_frame;
+        // Check if screen is currently stationary (settled)
+        let is_still = frames_settled(&prev_sample, &curr_frame);
+        if is_still {
+            still_ticks += 1;
+        } else {
+            still_ticks = 0;
+        }
+        prev_sample = curr_frame.clone();
+
+        // Stitch a keyframe when:
+        // 1. Content has moved a substantial step (>= 60px) AND the screen has paused/settled for >= 2 ticks (~50ms)
+        // OR 2. Content has moved more than 60% of viewport height (safety trigger to avoid losing overlap)
+        let should_stitch = (match_res.delta_y >= 60 && still_ticks >= 2)
+            || (match_res.delta_y >= rect.height as u32 * 6 / 10);
+
+        if should_stitch {
+            canvas.splice_keyframe(&curr_frame, match_res.delta_y);
+            keyframe = curr_frame;
+            still_ticks = 0;
 
             // Update status bar
             render_status_bar(&mut bar_buf, bar_w as usize, bar_h as usize, canvas.height);
@@ -194,7 +212,7 @@ pub fn record_manual_scroll<C: Connection>(
         }
     }
 
-    // Cleanup
+    // Cleanup floating windows
     let _ = conn.destroy_window(bar_win);
     let _ = conn.destroy_window(preview_win);
     conn.flush()?;
@@ -205,13 +223,11 @@ pub fn record_manual_scroll<C: Connection>(
 
         // Capture final static pristine frame
         if let Ok(final_crisp_frame) = capture_screen_rect(conn, root, rect) {
-            let match_res = find_vertical_shift(&prev_frame, &final_crisp_frame, Some(240));
-            if match_res.delta_y > 0 {
-                let start_y = (rect.height as u32).saturating_sub(match_res.delta_y);
-                canvas.append_rows(&final_crisp_frame, start_y, match_res.delta_y);
+            let max_search = (rect.height as u32 * 75 / 100).min(rect.height as u32 - 40);
+            let match_res = find_vertical_shift(&keyframe, &final_crisp_frame, Some(max_search));
+            if match_res.delta_y > 5 {
+                canvas.splice_keyframe(&final_crisp_frame, match_res.delta_y);
             }
-            // Overwrite the bottom viewport of the canvas with this 100% sharp, static frame
-            canvas.overwrite_bottom_rows(&final_crisp_frame, 0, rect.height as u32);
         }
 
         Ok(canvas.into_image())

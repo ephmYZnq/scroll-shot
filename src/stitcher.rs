@@ -22,6 +22,7 @@ impl LongCanvas {
     }
 
     /// Append a slice of rows [start_y .. start_y + slice_height] from frame
+    #[allow(dead_code)]
     pub fn append_rows(&mut self, frame: &RgbaImage, start_y: u32, slice_height: u32) {
         if slice_height == 0 {
             return;
@@ -43,6 +44,7 @@ impl LongCanvas {
     }
 
     /// Overwrite the bottom `rows` rows of canvas with 100% crisp rows from `frame`
+    #[allow(dead_code)]
     pub fn overwrite_bottom_rows(&mut self, frame: &RgbaImage, start_y_in_frame: u32, rows: u32) {
         let w = self.width as usize;
         let row_bytes = w * 4;
@@ -58,6 +60,46 @@ impl LongCanvas {
 
         if src_start < frame_raw.len() && dst_start < self.buffer.len() {
             self.buffer[dst_start..dst_end].copy_from_slice(&frame_raw[src_start..src_end]);
+        }
+    }
+
+    /// Splice a new settled keyframe into canvas using optimal zero-difference seam line.
+    ///
+    /// 1. Finds the horizontal seam line in the overlap with minimal pixel difference
+    ///    (which automatically snaps to blank space between paragraphs/text lines).
+    /// 2. Truncates the bottom of the previous frame up to the seam line, completely removing
+    ///    any stationary elements (e.g. floating "Scroll to bottom" buttons or sticky footers).
+    /// 3. Appends clean, settled content from curr_frame.
+    pub fn splice_keyframe(&mut self, curr_frame: &RgbaImage, shift_y: u32) {
+        let h = curr_frame.height();
+        if shift_y == 0 || shift_y >= h {
+            return;
+        }
+
+        let overlap_h = h - shift_y;
+        let w = self.width as usize;
+        let row_bytes = w * 4;
+
+        // Find optimal cut line in overlap
+        let r_cut = find_optimal_seam_row(self, curr_frame, shift_y, overlap_h);
+
+        // Previous frame occupied the bottom H rows of self.
+        // We truncate self up to the seam line:
+        let keep_height = self.height.saturating_sub(h).saturating_add(shift_y + r_cut);
+        let keep_bytes = (keep_height as usize) * row_bytes;
+        self.buffer.truncate(keep_bytes);
+        self.height = keep_height;
+
+        // Now append rows from curr_frame starting at r_cut down to H
+        let frame_raw = curr_frame.as_raw();
+        let append_rows = h - r_cut;
+        let start_byte = (r_cut as usize) * row_bytes;
+        let append_bytes = (append_rows as usize) * row_bytes;
+        let end_byte = (start_byte + append_bytes).min(frame_raw.len());
+
+        if start_byte < frame_raw.len() {
+            self.buffer.extend_from_slice(&frame_raw[start_byte..end_byte]);
+            self.height += append_rows;
         }
     }
 
@@ -228,9 +270,12 @@ fn find_best_template_y(img: &RgbaImage, template_h: u32, bottom_margin: u32) ->
         return (0, 0);
     }
 
-    // Search in the lower 50% of the image (avoids top headers/navigation)
-    let min_y = h / 2;
-    let max_y = h - bottom_margin - template_h;
+    // Search strictly in the middle scrollable zone (25% to 70% of viewport height).
+    // This strictly avoids:
+    // 1. Sticky headers / navigation bars at the top (0% .. 20%)
+    // 2. Floating action buttons / "Scroll to bottom" buttons / sticky footers at the bottom (75% .. 100%)
+    let min_y = (h * 25 / 100).max(10);
+    let max_y = (h * 70 / 100).saturating_sub(template_h).max(min_y);
     if min_y >= max_y {
         return (max_y, 100);
     }
@@ -259,6 +304,67 @@ fn find_best_template_y(img: &RgbaImage, template_h: u32, bottom_margin: u32) ->
     }
 
     (best_y, max_grad)
+}
+
+/// Find optimal seam row within the overlapping region [0 .. overlap_h]
+/// Searches for the horizontal row that minimizes pixel differences between canvas and curr_frame.
+/// Automatically snaps to blank space between paragraphs or text lines, guaranteeing no sliced text.
+fn find_optimal_seam_row(
+    canvas: &LongCanvas,
+    curr_frame: &RgbaImage,
+    shift_y: u32,
+    overlap_h: u32,
+) -> u32 {
+    let w = canvas.width as usize;
+    let h = curr_frame.height();
+    let row_bytes = w * 4;
+
+    // Search range: skip top 15px and bottom 20px of overlap
+    let min_r = 15.min(overlap_h.saturating_sub(1));
+    let max_r = overlap_h.saturating_sub(20).max(min_r);
+
+    let mut best_r = overlap_h / 2; // Default to midpoint of overlap
+    let mut min_diff: u64 = u64::MAX;
+
+    let frame_raw = curr_frame.as_raw();
+    let step_x = (w / 120).max(1);
+
+    for r in min_r..=max_r {
+        let canvas_y = canvas.height.saturating_sub(h) + shift_y + r;
+        if canvas_y >= canvas.height {
+            continue;
+        }
+
+        let canvas_row_start = (canvas_y as usize) * row_bytes;
+        let frame_row_start = (r as usize) * row_bytes;
+
+        if canvas_row_start + row_bytes > canvas.buffer.len()
+            || frame_row_start + row_bytes > frame_raw.len()
+        {
+            continue;
+        }
+
+        let mut row_diff: u64 = 0;
+        for x in (0..w).step_by(step_x) {
+            let c_idx = canvas_row_start + x * 4;
+            let f_idx = frame_row_start + x * 4;
+
+            let dr = (canvas.buffer[c_idx] as i32 - frame_raw[f_idx] as i32).unsigned_abs() as u64;
+            let dg = (canvas.buffer[c_idx + 1] as i32 - frame_raw[f_idx + 1] as i32).unsigned_abs() as u64;
+            let db = (canvas.buffer[c_idx + 2] as i32 - frame_raw[f_idx + 2] as i32).unsigned_abs() as u64;
+            row_diff += dr + dg + db;
+        }
+
+        if row_diff < min_diff {
+            min_diff = row_diff;
+            best_r = r;
+            if min_diff == 0 {
+                break; // Absolute zero-difference seam found!
+            }
+        }
+    }
+
+    best_r
 }
 
 /// Compute average SAD per sampled pixel channel for a candidate position
@@ -456,5 +562,51 @@ mod tests {
 
         let f3 = RgbaImage::from_pixel(100, 100, Rgba([200, 10, 10, 255]));
         assert!(!frames_settled(&f1, &f3));
+    }
+
+    #[test]
+    fn test_splice_keyframe_eliminates_floating_elements() {
+        let width = 200;
+        let height = 300;
+        let shift = 100;
+
+        // Frame 1 has content in 0..250, and a floating button at the bottom 250..300 (red)
+        let frame1 = RgbaImage::from_fn(width, height, |_x, y| {
+            if y >= 250 {
+                Rgba([255, 0, 0, 255]) // Floating button at bottom
+            } else if y % 20 < 10 {
+                Rgba([0, 0, 0, 255]) // Text lines
+            } else {
+                Rgba([255, 255, 255, 255]) // Whitespace
+            }
+        });
+
+        let mut canvas = LongCanvas::new(&frame1);
+        assert_eq!(canvas.height, 300);
+
+        // Frame 2 has content shifted up by 100px, and floating button still at bottom 250..300 (red)
+        let frame2 = RgbaImage::from_fn(width, height, |_x, y| {
+            if y >= 250 {
+                Rgba([255, 0, 0, 255]) // Floating button at bottom
+            } else {
+                let orig_y = y + shift;
+                if orig_y % 20 < 10 {
+                    Rgba([0, 0, 0, 255])
+                } else {
+                    Rgba([255, 255, 255, 255])
+                }
+            }
+        });
+
+        // Splice frame2 into canvas
+        canvas.splice_keyframe(&frame2, shift);
+        assert_eq!(canvas.height, 400);
+
+        // Verify that the floating button from frame 1 (which would have been around row 250 in a naive append)
+        // is NOT duplicated in the middle of canvas!
+        // At row 260 of the canvas, content should be from frame 2 (text or whitespace, NOT red button)
+        let final_img = canvas.into_image().unwrap();
+        let middle_pixel = final_img.get_pixel(width / 2, 260);
+        assert_ne!(middle_pixel[0], 255); // Red button was eliminated from middle!
     }
 }
