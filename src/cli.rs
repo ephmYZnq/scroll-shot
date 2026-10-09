@@ -60,6 +60,10 @@ pub struct Cli {
     #[arg(long)]
     pub single: bool,
 
+    /// Run in background daemon mode listening for Ctrl+1 global shortcut
+    #[arg(short = 'D', long)]
+    pub daemon: bool,
+
     /// Internal clipboard daemon mode
     #[arg(long, hide = true)]
     pub serve_clipboard: bool,
