@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Scroll Shot
+Comment=Pixel-perfect Scrolling & Area Screenshot Tool
+Exec=/home/ephm/Documents/Projects/scroll-shot/target/release/scroll-shot
+Icon=camera-photo
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;
+StartupNotify=true

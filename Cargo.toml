@@ -1,0 +1,11 @@
+[package]
+name = "scroll-shot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["xtest", "shm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+clap = { version = "4.5", features = ["derive"] }
+chrono = "0.4"
+libc = "0.2"
