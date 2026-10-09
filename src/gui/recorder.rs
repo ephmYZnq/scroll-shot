@@ -21,6 +21,7 @@ pub fn record_manual_scroll<C: Connection>(
     conn: &C,
     screen_num: usize,
     rect: &CaptureRect,
+    initial_frame: Option<RgbaImage>,
 ) -> Result<Option<RgbaImage>, Box<dyn Error>> {
     let setup = conn.setup();
     let screen = &setup.roots[screen_num];
@@ -28,8 +29,11 @@ pub fn record_manual_scroll<C: Connection>(
     let screen_w = screen.width_in_pixels;
     let screen_h = screen.height_in_pixels;
 
-    // Capture initial frame
-    let frame_0 = capture_screen_rect(conn, root, rect)?;
+    // Use initial pristine frame from freeze overlay if available, else capture fresh
+    let frame_0 = match initial_frame {
+        Some(f) => f,
+        None => capture_screen_rect(conn, root, rect)?,
+    };
     let mut canvas = LongCanvas::new(&frame_0);
     let mut prev_frame = frame_0;
 
@@ -196,6 +200,20 @@ pub fn record_manual_scroll<C: Connection>(
     conn.flush()?;
 
     if user_completed {
+        // Allow desktop window 80ms to settle any ongoing smooth scrolling animation
+        sleep(Duration::from_millis(80));
+
+        // Capture final static pristine frame
+        if let Ok(final_crisp_frame) = capture_screen_rect(conn, root, rect) {
+            let match_res = find_vertical_shift(&prev_frame, &final_crisp_frame, Some(240));
+            if match_res.delta_y > 0 {
+                let start_y = (rect.height as u32).saturating_sub(match_res.delta_y);
+                canvas.append_rows(&final_crisp_frame, start_y, match_res.delta_y);
+            }
+            // Overwrite the bottom viewport of the canvas with this 100% sharp, static frame
+            canvas.overwrite_bottom_rows(&final_crisp_frame, 0, rect.height as u32);
+        }
+
         Ok(canvas.into_image())
     } else {
         Ok(None)

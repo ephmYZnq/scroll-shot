@@ -42,6 +42,25 @@ impl LongCanvas {
         }
     }
 
+    /// Overwrite the bottom `rows` rows of canvas with 100% crisp rows from `frame`
+    pub fn overwrite_bottom_rows(&mut self, frame: &RgbaImage, start_y_in_frame: u32, rows: u32) {
+        let w = self.width as usize;
+        let row_bytes = w * 4;
+        let frame_raw = frame.as_raw();
+
+        let src_start = (start_y_in_frame as usize) * row_bytes;
+        let rows_to_copy = rows.min(self.height) as usize;
+        let dst_start = (self.height as usize - rows_to_copy) * row_bytes;
+        let total_bytes = rows_to_copy * row_bytes;
+
+        let src_end = (src_start + total_bytes).min(frame_raw.len());
+        let dst_end = (dst_start + (src_end - src_start)).min(self.buffer.len());
+
+        if src_start < frame_raw.len() && dst_start < self.buffer.len() {
+            self.buffer[dst_start..dst_end].copy_from_slice(&frame_raw[src_start..src_end]);
+        }
+    }
+
     /// Convert current buffer to an owned RgbaImage
     pub fn into_image(self) -> Option<RgbaImage> {
         RgbaImage::from_raw(self.width, self.height, self.buffer)

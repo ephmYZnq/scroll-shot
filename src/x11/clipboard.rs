@@ -11,7 +11,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 
-/// Encode RgbaImage into in-memory PNG bytes
+/// Encode RgbaImage into in-memory PNG bytes with 1:1 96 DPI metadata (pHYs chunk)
 pub fn encode_image_to_png(img: &RgbaImage) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut png_bytes = Vec::new();
     let encoder = PngEncoder::new(&mut png_bytes);
@@ -21,7 +21,10 @@ pub fn encode_image_to_png(img: &RgbaImage) -> Result<Vec<u8>, Box<dyn Error>> {
         img.height(),
         ExtendedColorType::Rgba8,
     )?;
-    Ok(png_bytes)
+
+    // Insert 96 DPI (3780 pixels per meter) pHYs chunk to ensure 100% 1:1 native rendering
+    let png_with_phys = insert_phys_chunk(png_bytes, 3780);
+    Ok(png_with_phys)
 }
 
 /// Copy RgbaImage directly to X11 CLIPBOARD by spawning a background clipboard server
@@ -175,4 +178,78 @@ fn handle_selection_request<C: Connection>(
     conn.send_event(false, req.requestor, EventMask::NO_EVENT, notify)?;
     conn.flush()?;
     Ok(())
+}
+
+/// Insert a standard PNG pHYs (Physical pixel dimensions) chunk right after IHDR
+/// 3780 pixels per meter corresponds to exactly 96.0 DPI
+pub fn insert_phys_chunk(png_data: Vec<u8>, pixels_per_meter: u32) -> Vec<u8> {
+    if png_data.len() < 33 || &png_data[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return png_data;
+    }
+
+    // Check if pHYs is already present
+    if png_data.windows(4).any(|w| w == b"pHYs") {
+        return png_data;
+    }
+
+    let mut phys = Vec::with_capacity(21);
+    // Chunk data length: 9 bytes
+    phys.extend_from_slice(&9u32.to_be_bytes());
+    // Chunk type: pHYs
+    phys.extend_from_slice(b"pHYs");
+    // Pixels per unit X
+    phys.extend_from_slice(&pixels_per_meter.to_be_bytes());
+    // Pixels per unit Y
+    phys.extend_from_slice(&pixels_per_meter.to_be_bytes());
+    // Unit specifier: 1 = meter
+    phys.push(1);
+
+    // CRC32 of chunk type + data
+    let crc = compute_crc32(&phys[4..]);
+    phys.extend_from_slice(&crc.to_be_bytes());
+
+    // Insert at byte 33 (directly after 8-byte signature + 25-byte IHDR)
+    let mut result = Vec::with_capacity(png_data.len() + 21);
+    result.extend_from_slice(&png_data[..33]);
+    result.extend_from_slice(&phys);
+    result.extend_from_slice(&png_data[33..]);
+    result
+}
+
+fn compute_crc32(buf: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in buf {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xedb8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xffff_ffff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_phys_chunk() {
+        let img = RgbaImage::new(10, 10);
+        let mut png_bytes = Vec::new();
+        let encoder = PngEncoder::new(&mut png_bytes);
+        encoder.write_image(img.as_raw(), 10, 10, ExtendedColorType::Rgba8).unwrap();
+
+        assert!(!png_bytes.windows(4).any(|w| w == b"pHYs"));
+
+        let with_phys = insert_phys_chunk(png_bytes, 3780);
+        assert!(with_phys.windows(4).any(|w| w == b"pHYs"));
+
+        // Must still decode cleanly with image crate
+        let decoded = image::load_from_memory(&with_phys).unwrap();
+        assert_eq!(decoded.width(), 10);
+        assert_eq!(decoded.height(), 10);
+    }
 }

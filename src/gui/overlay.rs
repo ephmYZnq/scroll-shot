@@ -1,5 +1,6 @@
 use crate::cli::CaptureRect;
 use crate::gui::font::draw_text;
+use image::RgbaImage;
 use std::error::Error;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
@@ -39,7 +40,7 @@ struct ToolbarButton {
 pub fn run_interactive_overlay<C: Connection>(
     conn: &C,
     screen_num: usize,
-) -> Result<UserAction, Box<dyn Error>> {
+) -> Result<(UserAction, Option<RgbaImage>), Box<dyn Error>> {
     let setup = conn.setup();
     let screen = &setup.roots[screen_num];
     let root = screen.root;
@@ -305,9 +306,47 @@ pub fn run_interactive_overlay<C: Connection>(
     conn.flush()?;
 
     // Small delay to ensure desktop compositor repaints target window
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
-    Ok(result)
+    match result {
+        UserAction::SingleShot(rect) => {
+            let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
+            Ok((result, Some(crop)))
+        }
+        UserAction::ScrollShot(rect) => {
+            let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
+            Ok((result, Some(crop)))
+        }
+        UserAction::Cancel => Ok((UserAction::Cancel, None)),
+    }
+}
+
+/// Losslessly crop rectangle directly from raw frozen screen buffer (BGRX -> RGBA)
+pub fn crop_rect_from_bgrx(
+    screen_buf: &[u8],
+    screen_w: usize,
+    screen_h: usize,
+    rect: &CaptureRect,
+) -> RgbaImage {
+    let rx = (rect.x.max(0) as usize).min(screen_w);
+    let ry = (rect.y.max(0) as usize).min(screen_h);
+    let rw = (rect.width as usize).min(screen_w.saturating_sub(rx));
+    let rh = (rect.height as usize).min(screen_h.saturating_sub(ry));
+
+    let mut img = RgbaImage::new(rw as u32, rh as u32);
+    let row_stride = screen_w * 4;
+
+    for y in 0..rh {
+        let src_start = (ry + y) * row_stride + rx * 4;
+        for x in 0..rw {
+            let s = src_start + x * 4;
+            let b = screen_buf[s];
+            let g = screen_buf[s + 1];
+            let r = screen_buf[s + 2];
+            img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, 255]));
+        }
+    }
+    img
 }
 
 fn is_near(mx: i32, my: i32, target_x: i32, target_y: i32) -> bool {

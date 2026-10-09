@@ -7,10 +7,11 @@ use clap::Parser;
 use cli::{CaptureRect, Cli};
 use gui::overlay::{run_interactive_overlay, UserAction};
 use gui::recorder::record_manual_scroll;
+use image::RgbaImage;
 use std::error::Error;
 use std::process::Command;
 use x11::capture::capture_screen_rect;
-use x11::clipboard::{copy_to_clipboard, run_clipboard_daemon};
+use x11::clipboard::{copy_to_clipboard, encode_image_to_png, run_clipboard_daemon};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
 use x11rb::protocol::Event;
@@ -32,19 +33,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // 3. Normal single run
-    let action = if let Some(ref rect_str) = args.rect {
+    let (action, pre_captured) = if let Some(ref rect_str) = args.rect {
         let rect = CaptureRect::parse(rect_str)?;
-        if args.single {
+        let action = if args.single {
             UserAction::SingleShot(rect)
         } else {
             UserAction::ScrollShot(rect)
-        }
+        };
+        (action, None)
     } else {
         // Run full-screen interactive freeze-frame overlay with handles and toolbar
         run_interactive_overlay(&conn, screen_num)?
     };
 
-    handle_action(&conn, screen_num, action, &args)?;
+    handle_action(&conn, screen_num, action, pre_captured, &args)?;
     Ok(())
 }
 
@@ -87,8 +89,9 @@ fn run_hotkey_daemon<C: Connection>(
         if let Event::KeyPress(ev) = event {
             if ev.detail == 10 {
                 // Key '1' pressed with Ctrl modifier!
-                let action = run_interactive_overlay(conn, screen_num)?;
-                let _ = handle_action(conn, screen_num, action, args);
+                if let Ok((action, pre_captured)) = run_interactive_overlay(conn, screen_num) {
+                    let _ = handle_action(conn, screen_num, action, pre_captured, args);
+                }
             }
         }
     }
@@ -98,6 +101,7 @@ fn handle_action<C: Connection>(
     conn: &C,
     screen_num: usize,
     action: UserAction,
+    pre_captured: Option<RgbaImage>,
     args: &Cli,
 ) -> Result<(), Box<dyn Error>> {
     let setup = conn.setup();
@@ -114,14 +118,19 @@ fn handle_action<C: Connection>(
                 rect.x, rect.y, rect.width, rect.height
             );
 
-            let img = capture_screen_rect(conn, root, &rect)?;
+            // Use pristine frozen image if captured from overlay, otherwise capture from screen
+            let img = match pre_captured {
+                Some(p) => p,
+                None => capture_screen_rect(conn, root, &rect)?,
+            };
 
             // Copy directly to clipboard (no saving needed)
+            let png_bytes = encode_image_to_png(&img)?;
             copy_to_clipboard(&img)?;
 
             // Optional: only save if user explicitly passed --output
             if let Some(ref path) = args.output {
-                img.save(path)?;
+                std::fs::write(path, &png_bytes)?;
                 println!("💾 已另存为文件: {}", path);
             }
 
@@ -143,15 +152,16 @@ fn handle_action<C: Connection>(
             );
             println!("👉 请随意向下滚动页面，滚动完毕后点击悬浮条上的【Done】按钮或按回车键！");
 
-            let result = record_manual_scroll(conn, screen_num, &rect)?;
+            let result = record_manual_scroll(conn, screen_num, &rect, pre_captured)?;
 
             if let Some(final_img) = result {
                 // Copy directly to clipboard (no saving needed)
+                let png_bytes = encode_image_to_png(&final_img)?;
                 copy_to_clipboard(&final_img)?;
 
                 // Optional: only save if user explicitly passed --output
                 if let Some(ref path) = args.output {
-                    final_img.save(path)?;
+                    std::fs::write(path, &png_bytes)?;
                     println!("💾 已另存为文件: {}", path);
                 }
 
