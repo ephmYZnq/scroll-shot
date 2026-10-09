@@ -7,6 +7,7 @@ use x11rb::protocol::xproto::Window;
 use x11rb::protocol::xtest;
 
 /// Calculate the appropriate cursor coordinate based on CursorPos policy
+#[allow(dead_code)]
 pub fn calculate_cursor_coords(rect: &CaptureRect, pos: CursorPos) -> (i16, i16) {
     match pos {
         CursorPos::Center => (
@@ -26,6 +27,7 @@ pub fn calculate_cursor_coords(rect: &CaptureRect, pos: CursorPos) -> (i16, i16)
 }
 
 /// Move mouse pointer and inject scroll down event (Button 5) using XTest extension
+#[allow(dead_code)]
 pub fn inject_scroll_down<C: Connection>(
     conn: &C,
     root: Window,
@@ -52,6 +54,7 @@ pub fn inject_scroll_down<C: Connection>(
 }
 
 /// Send mouse click to activate and focus the target window before scrolling
+#[allow(dead_code)]
 pub fn activate_window_at<C: Connection>(
     conn: &C,
     root: Window,

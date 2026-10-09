@@ -54,6 +54,7 @@ pub struct MatchResult {
     /// Vertical pixel shift (0 means no movement / bottom reached)
     pub delta_y: u32,
     /// Average per-pixel color channel difference (lower is better, < 8.0 is confident)
+    #[allow(dead_code)]
     pub avg_diff: f32,
 }
 
@@ -246,6 +247,7 @@ pub fn compute_overlap_sad(prev: &RgbaImage, curr: &RgbaImage, shift_y: u32) -> 
 }
 
 /// Check if two consecutive frames are practically identical (settled)
+#[allow(dead_code)]
 pub fn frames_settled(f1: &RgbaImage, f2: &RgbaImage) -> bool {
     if f1.dimensions() != f2.dimensions() {
         return false;
