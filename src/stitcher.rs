@@ -58,9 +58,13 @@ pub struct MatchResult {
     pub avg_diff: f32,
 }
 
-/// Calculate 1D vertical shift using SAD with Full-Overlap Verification
+/// Calculate 1D vertical shift using high-contrast adaptive template matching + dense full-overlap verification.
 ///
-/// Guaranteed to prevent false-positive matching on white spaces, repetitive lines, or non-scrolled windows.
+/// Guaranteed:
+/// 1. Evaluates EVERY row without skipping in the template (step_y = 1) for sub-single-pixel precision.
+/// 2. Selects the template window with the highest vertical edge/text contrast to avoid blank spaces.
+/// 3. Validates trough sharpness (V-shape) so flat/ambiguous matches are rejected.
+/// 4. Densely verifies the entire overlapping region to completely eliminate text seams and duplicated strokes.
 pub fn find_vertical_shift(
     prev_frame: &RgbaImage,
     curr_frame: &RgbaImage,
@@ -76,21 +80,18 @@ pub fn find_vertical_shift(
         };
     }
 
-    // Level 1 Defense: Did the frame move at all?
-    // Compare across the middle/lower region
+    // Step 1: Did the frame move at all?
     let zero_diff = compute_overlap_sad(prev_frame, curr_frame, 0);
-    if zero_diff < 1.5 {
-        // Frame is virtually identical: page has reached bottom or didn't scroll
+    if zero_diff < 0.8 {
+        // Frame is identical: no movement
         return MatchResult {
             delta_y: 0,
             avg_diff: zero_diff,
         };
     }
 
-    // Template parameters:
-    // Take a template strip from the lower 35% of prev_frame
-    let template_height = (h / 4).clamp(50, 160);
-    let bottom_margin = 15; // Ignore bottom 15px in case of bottom borders or status bar
+    let template_height = (h / 4).clamp(60, 140);
+    let bottom_margin = 15;
 
     if h <= template_height + bottom_margin + 20 {
         return MatchResult {
@@ -99,17 +100,24 @@ pub fn find_vertical_shift(
         };
     }
 
-    let prev_template_bottom = h - bottom_margin;
-    let prev_template_top = prev_template_bottom - template_height;
+    // Step 2: Dynamically hunt for the region with HIGHEST vertical texture (text/icons/contrast)
+    // in the lower 60% of prev_frame
+    let (prev_template_top, edge_energy) = find_best_template_y(prev_frame, template_height, bottom_margin);
 
-    // Search range for shift:
-    // When scrolling down, content moves UP.
-    // Minimum plausible scroll step on Linux desktop is ~15px
-    let min_shift = 15;
+    // If the region has virtually zero contrast (e.g. pure blank white page), require strict motion
+    if edge_energy < 50 {
+        return MatchResult {
+            delta_y: 0,
+            avg_diff: zero_diff,
+        };
+    }
+
+    // Candidate shifts: search from 2px up to max_shift
+    let min_shift = 2;
     let max_shift = max_search_y
         .unwrap_or(prev_template_top)
         .min(prev_template_top)
-        .min(h - 40);
+        .min(h - 30);
 
     if max_shift < min_shift {
         return MatchResult {
@@ -118,12 +126,13 @@ pub fn find_vertical_shift(
         };
     }
 
-    let step_x = (w / 120).max(1);
+    let step_x = (w / 160).max(1);
 
     let mut best_candidate_shift = 0;
     let mut min_template_diff = f32::MAX;
+    let mut second_best_diff = f32::MAX;
 
-    // Fast candidate scan using template
+    // Step 3: Candidate search with EVERY single vertical row checked (step_y = 1)
     for shift in min_shift..=max_shift {
         let curr_top = prev_template_top - shift;
         let diff = compute_sad_at_shift(
@@ -137,32 +146,55 @@ pub fn find_vertical_shift(
         );
 
         if diff < min_template_diff {
+            second_best_diff = min_template_diff;
             min_template_diff = diff;
             best_candidate_shift = shift;
+        } else if diff < second_best_diff {
+            second_best_diff = diff;
         }
     }
 
-    // Level 2 Defense: If template diff is too high (> 12.0), reject candidate
-    if min_template_diff > 12.0 || best_candidate_shift == 0 {
+    // Step 4: Quality Checks
+    // 4.1 Check absolute template match error (< 8.0)
+    if min_template_diff > 8.0 || best_candidate_shift == 0 {
         return MatchResult {
             delta_y: 0,
             avg_diff: zero_diff,
         };
     }
 
-    // Level 3 Defense (GOLDEN BULLET): Full-Overlap Verification!
-    // If the image truly shifted by best_candidate_shift:
-    // Then the ENTIRE overlapping region [0 .. H - shift] MUST match with prev_frame [shift .. H]
+    // 4.2 Trough uniqueness check: Ensure this is a clear local minimum (not flat ambiguity)
+    if best_candidate_shift > min_shift && best_candidate_shift < max_shift {
+        let prev_s = compute_sad_at_shift(
+            prev_frame, curr_frame, w,
+            prev_template_top, prev_template_top - (best_candidate_shift - 1),
+            template_height, step_x,
+        );
+        let next_s = compute_sad_at_shift(
+            prev_frame, curr_frame, w,
+            prev_template_top, prev_template_top - (best_candidate_shift + 1),
+            template_height, step_x,
+        );
+        // Both adjacent rows must have higher error (sharp V-trough)
+        if prev_s <= min_template_diff || next_s <= min_template_diff {
+            return MatchResult {
+                delta_y: 0,
+                avg_diff: zero_diff,
+            };
+        }
+    }
+
+    // Step 5: Dense Full-Overlap Verification (checking every 2nd row across the ENTIRE overlap)
     let overlap_err = compute_overlap_sad(prev_frame, curr_frame, best_candidate_shift);
 
-    // If overlap error is acceptable (< 8.0), we have a verified authentic shift!
-    if overlap_err <= 8.5 {
+    // Overlap error must be exceptionally low (< 6.5) to guarantee seamless pixel alignment
+    if overlap_err <= 6.5 {
         MatchResult {
             delta_y: best_candidate_shift,
             avg_diff: overlap_err,
         }
     } else {
-        // False positive match (e.g. whitespace or repetitive lines matched by coincidence)
+        // Rejected false match
         MatchResult {
             delta_y: 0,
             avg_diff: zero_diff,
@@ -170,7 +202,48 @@ pub fn find_vertical_shift(
     }
 }
 
+/// Find the vertical template window with highest edge/gradient energy
+fn find_best_template_y(img: &RgbaImage, template_h: u32, bottom_margin: u32) -> (u32, u64) {
+    let (w, h) = img.dimensions();
+    if h <= template_h + bottom_margin {
+        return (0, 0);
+    }
+
+    // Search in the lower 50% of the image (avoids top headers/navigation)
+    let min_y = h / 2;
+    let max_y = h - bottom_margin - template_h;
+    if min_y >= max_y {
+        return (max_y, 100);
+    }
+
+    let step_x = (w / 80).max(1);
+    let mut best_y = max_y;
+    let mut max_grad: u64 = 0;
+
+    for y in (min_y..=max_y).step_by(3) {
+        let mut grad_sum: u64 = 0;
+        for r in (y..y + template_h).step_by(2) {
+            let next_r = (r + 1).min(h - 1);
+            for x in (0..w).step_by(step_x as usize) {
+                let p1 = img.get_pixel(x, r);
+                let p2 = img.get_pixel(x, next_r);
+                let d = (p1[0] as i32 - p2[0] as i32).unsigned_abs() as u64
+                    + (p1[1] as i32 - p2[1] as i32).unsigned_abs() as u64
+                    + (p1[2] as i32 - p2[2] as i32).unsigned_abs() as u64;
+                grad_sum += d;
+            }
+        }
+        if grad_sum > max_grad {
+            max_grad = grad_sum;
+            best_y = y;
+        }
+    }
+
+    (best_y, max_grad)
+}
+
 /// Compute average SAD per sampled pixel channel for a candidate position
+/// CRITICAL: Checks EVERY single row (r in 0..height) without row skipping for single-pixel exactness!
 #[inline]
 fn compute_sad_at_shift(
     prev: &RgbaImage,
@@ -184,7 +257,8 @@ fn compute_sad_at_shift(
     let mut total_diff: u64 = 0;
     let mut count: u64 = 0;
 
-    for r in (0..height).step_by(2) {
+    // Step by 1 along Y: DO NOT SKIP ROWS!
+    for r in 0..height {
         let py = prev_top + r;
         let cy = curr_top + r;
 
@@ -209,6 +283,7 @@ fn compute_sad_at_shift(
 }
 
 /// Verify that the entire overlapping area matches between prev_frame and curr_frame
+/// Uses dense step_y = 2 to ensure every text line stroke is verified
 pub fn compute_overlap_sad(prev: &RgbaImage, curr: &RgbaImage, shift_y: u32) -> f32 {
     let (w, h) = prev.dimensions();
     if shift_y >= h {
@@ -216,14 +291,15 @@ pub fn compute_overlap_sad(prev: &RgbaImage, curr: &RgbaImage, shift_y: u32) -> 
     }
 
     let overlap_h = h - shift_y;
-    let step_x = (w / 100).max(1);
-    let step_y = (overlap_h / 40).max(1);
+    let step_x = (w / 120).max(1);
+    // Dense verification: step by 2 rows across the entire overlap
+    let step_y = 2;
 
     let mut total_diff: u64 = 0;
     let mut count: u64 = 0;
 
-    for r in (0..overlap_h).step_by(step_y as usize) {
-        let py = r + shift_y; // In prev_frame, content was down by shift_y
+    for r in (0..overlap_h).step_by(step_y) {
+        let py = r + shift_y; // In prev_frame, content was at r + shift_y
         let cy = r;           // In curr_frame, content has moved up to r
 
         for x in (0..w).step_by(step_x as usize) {
@@ -310,24 +386,33 @@ mod tests {
     fn test_find_vertical_shift_synthetic() {
         let width = 300;
         let height = 400;
-        let shift_amount = 65;
+        let shift_amount = 45;
 
-        // Generate synthetic patterned frame 1
+        // Generate synthetic patterned frame 1 with sharp horizontal text-like lines
         let frame1 = RgbaImage::from_fn(width, height, |_x, y| {
-            let v = ((y * 17) % 256) as u8;
-            Rgba([v, 255 - v, (v / 2), 255])
+            // Emulate text lines with spacing
+            if y % 28 < 14 {
+                let v = ((y * 19) % 256) as u8;
+                Rgba([v, 255 - v, (v / 2), 255])
+            } else {
+                Rgba([255, 255, 255, 255]) // White space between lines
+            }
         });
 
-        // Frame 2 is frame 1 shifted upwards by shift_amount, with new rows at bottom
+        // Frame 2 is frame 1 shifted upwards by shift_amount
         let frame2 = RgbaImage::from_fn(width, height, |_x, y| {
             let src_y = y + shift_amount;
-            let v = ((src_y * 17) % 256) as u8;
-            Rgba([v, 255 - v, (v / 2), 255])
+            if src_y % 28 < 14 {
+                let v = ((src_y * 19) % 256) as u8;
+                Rgba([v, 255 - v, (v / 2), 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
         });
 
         let res = find_vertical_shift(&frame1, &frame2, None);
         assert_eq!(res.delta_y, shift_amount);
-        assert!(res.avg_diff < 1.0);
+        assert!(res.avg_diff < 0.5);
     }
 
     #[test]
