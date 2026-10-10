@@ -4,7 +4,11 @@
 
 **专为 Linux 桌面打造的极轻量、高分辨率、像素级无损滚动截屏与贴图工具。**
 
-[English](README.md) | [简体中文](README_zh.md)
+[![GitHub Release](https://img.shields.io/github/v/release/ephmYZnq/scroll-shot?color=3388ff&logo=github)](https://github.com/ephmYZnq/scroll-shot/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Binary Size](https://img.shields.io/badge/Binary%20Size-~1.9MB-blue.svg)](https://github.com/ephmYZnq/scroll-shot/releases)
+
+[English](README.md) | [简体中文](README_zh.md) | [🚀 直接下载 v0.2.0 发行版](https://github.com/ephmYZnq/scroll-shot/releases/latest)
 
 </div>
 

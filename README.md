@@ -4,7 +4,11 @@
 
 **Ultra-lightweight, high-resolution, pixel-perfect scrolling screenshot and pinning tool designed for Linux desktop.**
 
-[English](README.md) | [简体中文](README_zh.md)
+[![GitHub Release](https://img.shields.io/github/v/release/ephmYZnq/scroll-shot?color=3388ff&logo=github)](https://github.com/ephmYZnq/scroll-shot/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Binary Size](https://img.shields.io/badge/Binary%20Size-~1.9MB-blue.svg)](https://github.com/ephmYZnq/scroll-shot/releases)
+
+[English](README.md) | [简体中文](README_zh.md) | [🚀 Download v0.2.0 Release](https://github.com/ephmYZnq/scroll-shot/releases/latest)
 
 </div>
 
