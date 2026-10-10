@@ -34,13 +34,10 @@ jobs:
         PKG_NAME="scroll-shot-${TAG_NAME}-linux-x86_64"
         mkdir -p "${PKG_NAME}"
         cp target/release/scroll-shot "${PKG_NAME}/"
-        cp setup_hotkey.sh "${PKG_NAME}/"
-        cp scroll-shot.desktop "${PKG_NAME}/"
         cp README.md "${PKG_NAME}/"
         cp README_zh.md "${PKG_NAME}/"
         cp LICENSE "${PKG_NAME}/"
         chmod +x "${PKG_NAME}/scroll-shot"
-        chmod +x "${PKG_NAME}/setup_hotkey.sh"
 
         tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
         sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
