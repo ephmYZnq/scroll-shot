@@ -6,3 +6,6 @@
 .DS_Store
 .vscode/
 .idea/
+dist/
+*.tar.gz
+*.sha256
