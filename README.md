@@ -1,153 +1,196 @@
 # scroll-shot
 
-> **专为 Linux 桌面打造的极轻量、高分辨率、像素级无损滚动截屏（长截图）工具。**
+<div align="center">
 
-`scroll-shot` 是一个采用 Rust 编写的系统级长截图小工具，专注于在 Linux 环境下提供极速冷启动、低内存占用以及 100% 点对点原画质长图拼接能力。
+**Ultra-lightweight, high-resolution, pixel-perfect scrolling screenshot and pinning tool designed for Linux desktop.**
 
----
+[English](README.md) | [简体中文](README_zh.md)
 
-## 🌟 核心特性
-
-- **直达系统剪贴板（即截即贴，无需存盘）**：
-  - 截完图（无论是普通截图还是长截图）**自动写入 X11 剪切板**，无需生成多余文件落盘，切换到聊天窗口、邮件或文档直接 **`Ctrl+V`** 即可粘贴！
-  - 如有需要，亦可通过 `-o <PATH>` 显式另存为文件。
-- **全局快捷键【Ctrl + 1】秒启（专为虚拟机与全屏应用定制）**：
-  - 已支持通过 **`Ctrl + 1`** 随时随地瞬间呼出截图遮罩，不用切换窗口找图标！
-  - 支持 GNOME 原生全局快捷键（`./setup_hotkey.sh`）与常驻后台监听模式（`./scroll-shot --daemon`）。
-- **实时悬浮画幅微缩预览（Live Preview Thumbnail）**：
-  - 手动滚动录制时，旁边实时显示**等比例拼接长图微缩预览窗口**。
-  - 画面随您的滚动动态延伸，拼接效果、内容对齐和当前高度一目了然，滚到哪看到哪！
-- **用户自由手动滚动（告别机械死板的自动滚屏）**：
-  - 不需要程序自动滚屏！进入长截图后，屏幕上方显示精致的实时高度录制条与右侧预览窗口。
-  - 用户用**鼠标滚轮、触控板或拖动滚动条自由滚动**，程序以高帧率实时智能捕捉新增内容并无损拼接。
-  - 滚到满意的位置，点击录制条上的 **`[Done]`** 按钮（或按回车），一键完成并复制到剪贴板！
-- **全屏 GUI 遮罩（对标系统原生体验）**：
-  - 启动后自动弹出类似系统原生（GNOME 截图工具）的**全屏暗色冻结遮罩**。
-  - 支持鼠标拖拽高亮选区、四周圆点手柄调节大小、移动选框。
-  - 选框底部浮动控制栏：支持一键 **【普通截图】**、**【长截图】** 与 **【取消】**。
-- **开箱即用与双击直启**：
-  - 项目根目录已提供 `scroll-shot` 可执行文件与 `scroll-shot.desktop` 桌面快捷方式，在文件管理器中**直接双击即可启动选框界面**，无需先开终端。
-- **100% 点对点像素无损与全重叠闭环校验**：
-  - 采用垂直 1D 位移匹配与全重叠区域闭环校验（Full-Overlap Verification），彻底杜绝白屏/重复行引起的失真与百叶窗锯齿。
-- **专为虚拟机与远程窗口深度优化**：
-  - 支持直接截取 VirtualBox / VMware / QEMU / Remmina 等虚拟机内的滚动内容。
-  - **画面静止自适应检测（Settling Detection）**：自动等待虚拟机内平滑滚动动画（Smooth Scrolling）稳定后再抓帧，彻底告别重影与运动模糊。
-  - **光标边缘锚点策略**：模拟滚轮时自动将光标移至选区边缘，防止光标箭头印在正中央污染长图。
-- **X11 原生高性能管线**：
-  - 基于 `x11rb` 与 **MIT-SHM（X Shared Memory Extension）**，单帧抓取零拷贝，耗时在 1~3ms 内。
-  - 基于 **X11 XTest** 扩展向目标窗口精准模拟滚轮事件。
-- **智能避让与触底自停**：
-  - 自动避开页面固定吸顶栏（Sticky Header）的特征干扰。
-  - 滚动到达底部（连续无新位移）时自动保存并优雅退出。
-  - 支持快捷键随时强制中断并输出当前已捕获内容。
+</div>
 
 ---
 
-## 📐 处理管线流程 (Pipeline)
+`scroll-shot` is a native system screenshot and scrolling capture (long screenshot) utility written in pure Rust. It is engineered specifically for Linux desktop environments, delivering **instant cold startup, low memory footprint, a single standalone binary (<2MB), zero heavy GUI/framework dependencies**, and **100% 1:1 pixel-lossless stitching quality**.
+
+---
+
+## 🌟 Key Features
+
+### 1. 📋 Direct System Clipboard Integration (Instant Paste, No Disk Clutter)
+- Captured images (standard shots, annotated images, or long stitched screenshots) are **automatically written to the X11 clipboard** upon completion.
+- Switch to chat apps (Slack, Discord, Telegram, WeChat), emails, or documents and paste directly with **`Ctrl+V`**!
+- If file archiving is desired, explicitly save with `-o <PATH>`.
+
+### 2. 📌 Pin to Desktop
+- Floating desktop pin window inspired by Snipaste / PixPin:
+  - **Fluid Window Dragging**: Drag from anywhere within the window. Optimized with X11 motion event coalescing for buttery smooth 60~144Hz movement even on 4K HiDPI displays.
+  - **Lossless Zoom**: Mouse wheel scaling from 0.15x to 4.0x with nearest-neighbor and bilinear filtering. Press `0` to instantly restore 1:1 scale.
+  - **Window Opacity Control**: Hold `Ctrl` or `Shift` + mouse wheel to adjust transparency smoothly (30% to 100% alpha).
+  - **Quick Dismiss**: Double click, press `ESC`, or click the top-right button to close.
+
+### 3. 🎨 Advanced Annotator
+- **Step Counters ①②③** (Hotkey `n`): Click to place auto-incrementing step bubbles to clarify user guides and bug reproduction steps. Supports `Ctrl+Z` undo to rewind counters.
+- **Interactive In-Place Typing T Text** (Hotkey `t`): Type text directly onto screenshots with cursor navigation, backspace editing, and enter to commit. Text is rendered with a 1px protective drop shadow for high contrast.
+- **Classic Drawing Tools**: Rectangles, Arrows, Mosaic/Blur brush, Highlighter strokes, and 4-color palette.
+
+### 4. 🔤 Offline Multi-Language OCR & Interactive Text Selection
+- **Instant Offline Recognition**: Click **`OCR`** on the toolbar (or press `o`) to extract code snippets, error logs, or paragraphs in seconds.
+- **Bilingual & Multi-Language Support**: Automatically queries and combines installed Tesseract language models (e.g. `chi_sim`, `chi_tra`, `eng`, etc.) for seamless mixed-language recognition.
+- **FreeType Antialiased Typography**: Dynamically binds to Linux system FreeType (`libfreetype.so.6`) to render authentic CJK and Latin vector glyphs with zero garbled symbols.
+- **Interactive Mouse Drag Selection & Selection-Only Copy**:
+  - Drag the mouse across single or multiple lines with royal blue highlight rendering.
+  - **Smart Copying**: Press `Ctrl+C`, `c`, or click the copy button to **copy ONLY highlighted text** when a selection is active; copies full text when nothing is selected.
+  - Press `Ctrl+A` to select all text.
+  - Automatically copies text to both X11 `CLIPBOARD` (`Ctrl+V`) and `PRIMARY` (middle-click paste).
+
+### 5. 🎯 Native Pixel Icons & Polished UI
+- All toolbar buttons feature custom 8x8 native pixel icons (Camera, Pin, Pencil, OCR scanner, Scroll arrows, Close cross).
+- Independent of system Emoji fonts, eliminating missing glyph boxes (`☒`) and ensuring a razor-sharp, consistent look across all Linux distributions.
+
+### 6. 📜 Human-Driven Live Scrolling Capture (No Stiff Auto-Scrolling)
+- Replaces rigid robotic auto-scrolling with intuitive human-guided capture:
+  - While scrolling, a sleek height recorder bar appears at the top, accompanied by a **live proportional thumbnail preview** on the right.
+  - Scroll naturally using **mouse wheel, trackpad gestures, or by dragging the scrollbar**. The engine captures incoming frames at high frame rates and stitches them with sub-pixel alignment.
+  - When finished, click **`[Done]`** on the toolbar (or hit `Enter`) to finalize and copy directly to your clipboard.
+
+### 7. 🖥️ Fullscreen Freeze Mask & Global Hotkey
+- Launches with an instant dark freeze mask modeled after native desktop screen capture tools.
+- Drag to select region, resize with 8-direction handles, or move selection box.
+- **Global Hotkey [Ctrl + 1]**: Instant summons anywhere on your desktop—ideal for full-screen workflows and virtual machine operations.
+
+---
+
+## 📐 Processing Pipeline
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌───────────────────────┐
-│ 1. 选区交互     │ ──> │ 2. 抓帧与滚动循环│ ──> │ 3. 1D 像素级无损缝合  │
-│ 鼠标拖拽框选 /   │     │ XShm 抓取当前帧  │     │ 提取上一帧底部模板    │
-│ CLI 指定区域    │     │ XTest 注入滚轮   │     │ 寻找精确垂直位移 Δy   │
-└─────────────────┘     └──────────────────┘     └──────────┬────────────┘
-                                                            │
-                                                            ▼
-                                                 ┌───────────────────────┐
-                                                 │ 4. 触底检测与输出     │
-                                                 │ 连续 Δy=0 或达上限    │
-                                                 │ 导出无损 PNG 文件     │
-                                                 └───────────────────────┘
+┌──────────────────┐     ┌───────────────────┐     ┌───────────────────────┐
+│ 1. Area Selector │ ──> │ 2. Capture Loop   │ ──> │ 3. 1D Lossless Stitch │
+│ Mouse drag-box / │     │ XShm grabs frame  │     │ Extract overlap slice │
+│ CLI coordinates  │     │ User scrolls page │     │ Detect vertical Δy    │
+└──────────────────┘     └───────────────────┘     └──────────┬────────────┘
+                                                              │
+                                                              ▼
+                                                   ┌───────────────────────┐
+                                                   │ 4. Live Preview & Out │
+                                                   │ Dynamic canvas append │
+                                                   │ Copy to clipboard     │
+                                                   └───────────────────────┘
 ```
 
 ---
 
-## 🎯 MVP 版本范围 (v0.1.0)
+## 🚀 Quick Start
 
-MVP 阶段聚焦于打通最核心可靠的长截图完整闭环：
+### 1. Requirements
+- **OS**: Linux (X11 desktop: GNOME, KDE, XFCE, etc.).
+- **Rust Toolchain**: Rust 1.75+ (`cargo`).
+- **Optional: Local Offline OCR Component**:
+  - `scroll-shot` uses standard pipelines to interface with the lightweight `tesseract-ocr` engine:
+    - **Ubuntu / Debian / Linux Mint / Deepin**:
+      ```bash
+      sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim
+      ```
+    - **Arch Linux / Manjaro**:
+      ```bash
+      sudo pacman -S tesseract tesseract-data-chi_sim tesseract-data-eng
+      ```
+    - **Fedora / RHEL**:
+      ```bash
+      sudo dnf install -y tesseract tesseract-langpack-chi_sim tesseract-langpack-eng
+      ```
+  - *Note: If not installed, clicking OCR displays a friendly installation command with a one-click `[Copy Command]` button.*
 
-- [x] **选区交互**：支持交互式鼠标框选矩形区域，或通过 `--rect` 参数直接传入目标坐标。
-- [x] **原生捕获**：集成 `x11rb` 完成 X11 屏幕坐标像素读取与共享内存极速抓取。
-- [x] **滚动控制**：XTest 精准注入鼠标向下滚动，带有重绘防抖缓冲延迟。
-- [x] **缝合核心**：基于 SAD（Sum of Absolute Differences）的 1D 垂直模板匹配，无损扩容画布。
-- [x] **安全自停**：双重停止保障（自动触底检测 + `--max-screens` 最大屏数保护 + `Ctrl+C`/`ESC` 中断捕获）。
-- [x] **产物输出**：高质量 PNG 无损导出。
-
----
-
-## 🚀 快速开始
-
-### 1. 系统要求与环境准备
-- **操作系统**：Linux（首发支持 X11 架构，GNOME / KDE / XFCE 等）
-- **编译工具**：Rust 1.75+ (Cargo)
-
-### 2. 构建项目
+### 2. Build & Run
 ```bash
 git clone https://github.com/your-username/scroll-shot.git
 cd scroll-shot
 cargo build --release
 ```
-编译产物位于 `target/release/scroll-shot`。
+The compiled standalone binary is placed at `target/release/scroll-shot` (only **~1.9MB**).
 
----
-
-## 💻 命令行使用方式 (CLI)
-
-### 基本用法
-
+Run directly:
 ```bash
-# 1. 默认交互模式：启动后鼠标拖拽框选区域，自动开始长截图
-./scroll-shot
-
-# 2. 指定输出文件路径
-./scroll-shot -o ./screenshot.png
-
-# 3. 指定固定坐标区域 (x, y, 宽度, 高度) 跳过鼠标框选交互
-./scroll-shot --rect 100,200,800,600
-
-# 4. 微调滚动步长与重绘等待延迟 (毫秒)
-./scroll-shot --step 3 --delay 80
-
-# 5. 限制最大截取屏数（防止无限长列表死循环，默认 20 屏）
-./scroll-shot --max-screens 15
+./target/release/scroll-shot
 ```
 
-### 参数详解
+---
 
-| 参数项 | 简写 | 默认值 | 说明 |
+## 💻 Command-Line Interface (CLI)
+
+```bash
+# 1. Interactive selection mode: drag to select region
+./scroll-shot
+
+# 2. Single screenshot mode (skip scrolling capture)
+./scroll-shot --single
+
+# 3. Save directly to file (clipboard copy is always active)
+./scroll-shot -o ./screenshot.png
+
+# 4. Specific target rectangle (x, y, width, height)
+./scroll-shot --rect 100,200,800,600
+
+# 5. Background daemon mode for global hotkey (Ctrl+1)
+./scroll-shot --daemon
+```
+
+### CLI Option Reference
+
+| Option | Flag | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--output <PATH>` | `-o` | `scroll_shot_<timestamp>.png` | 输出 PNG 文件路径 |
-| `--rect <X,Y,W,H>` | `-r` | 无 (启动交互框选) | 截取矩形范围 |
-| `--delay <MS>` | `-d` | `80` | 滚轮后基础防抖等待延迟 (毫秒) |
-| `--settle-timeout <MS>`| | `300` | 画面静止检测超时(毫秒)，自适应等待虚拟机平滑滚动停稳 |
-| `--cursor-pos <MODE>` | | `right` | 滚轮注入时的光标位置：`right`(右侧防遮挡)、`center`(正中) |
-| `--step <COUNT>` | `-s` | `2` | 每次滚动发送的滚轮刻度次数 |
-| `--max-screens <N>`| `-m` | `20` | 最大允许拼接的屏幕倍数，防死循环保护 |
-| `--preset <vm/native>`| | `native` | 快速预设模式（`vm` 模式自动优化光标位置与等待停稳） |
-| `--single` | | `false` | 单张普通截图模式（直接保存选区，不进行向下滚动） |
-| `--verbose` | `-v` | `false` | 输出详细的匹配对齐日志与位移数值 |
+| `--output <PATH>` | `-o` | Auto-clipboard (optional file) | Output PNG image file path |
+| `--rect <X,Y,W,H>` | `-r` | None (interactive) | Predefined capture rectangle |
+| `--single` | | `false` | Single screenshot mode |
+| `--daemon` | | `false` | Background daemon listening for Ctrl+1 |
+| `--delay <MS>` | `-d` | `80` | Post-scroll settling debounce delay in ms |
+| `--settle-timeout <MS>`| | `300` | Adaptive settling timeout for smooth-scrolling |
+| `--step <COUNT>` | `-s` | `2` | Scroll tick count per injection |
+| `--max-screens <N>`| `-m` | `20` | Maximum vertical screen height multiplier |
+| `--preset <vm/native>`| | `native` | Tuning preset (`vm` optimizes cursor position) |
+| `--verbose` | `-v` | `false` | Enable verbose alignment logging |
 
 ---
 
-## 🔬 关键技术设计决策
+## ⌨️ Shortcut Reference
 
-### 1. 为什么不用传统 OpenCV 特征点拼接？
-网页、代码编辑器或长文档具有大量平行的横向文本行。SIFT/ORB 等点特征匹配算法在高度规律的代码行中容易产生错误的局部拓扑匹配，且单应性矩阵（Homography）重新采样会破坏亚像素抗锯齿字体，导致截出来的文字模糊。
-**`scroll-shot` 坚持 1D 整数纯平移对齐**：纵向寻找像素匹配点，横向位移严格锁死为 0，像素块直接按行原样搬运，达到 100% 原始画质。
-
-### 2. 避让吸顶元素 (Sticky Headers)
-现代网页与桌面应用普遍具有固定在顶部的导航栏。如果拿整帧比对，静止的导航栏会导致计算出的位移量为 0。
-`scroll-shot` 在算法上仅取上一帧底部 20%~30% 的区域作为搜索模板，彻底避开顶部可能存在的静止组件。
+| Context | Shortcut | Action |
+| :--- | :--- | :--- |
+| **Global** | `Ctrl + 1` | Summon screen capture overlay |
+| **Selection Mask** | Mouse Drag | Draw rectangular capture region |
+| | `Enter` / Double-click | Capture selection and copy to clipboard |
+| | `s` | Start scrolling capture mode |
+| | `p` | Pin selection to desktop |
+| | `e` | Enter annotation editor |
+| | `o` | Extract text with OCR |
+| | `ESC` | Cancel and dismiss |
+| **Scrolling Recorder** | Mouse Wheel / Trackpad | Scroll page vertically |
+| | `Enter` / Click `[Done]` | Finish scrolling capture and copy to clipboard |
+| | `ESC` | Cancel scrolling capture |
+| **Pin Window** | Left Mouse Drag | Move pin window position |
+| | Mouse Wheel | Scale image (0.15x ~ 4.0x) |
+| | `0` | Reset image to 1:1 original scale |
+| | `Ctrl` / `Shift` + Wheel | Adjust opacity (30% ~ 100%) |
+| | Double-click / `ESC` | Close pin window |
+| **OCR Dialog** | Left Mouse Drag | Highlight select text segment |
+| | `Ctrl + C` / `c` | Copy highlighted text (or all text if none selected) |
+| | `Ctrl + A` | Select all text |
+| | `ESC` | Close OCR dialog |
 
 ---
 
-## 🗺️ 后续路线图 (Roadmap)
+## ❓ FAQ & Troubleshooting
 
-- [ ] **v0.2.0**: 自动将合成的长截图写入 X11 剪贴板（`XA_CLIPBOARD`，即截即贴）。
-- [ ] **v0.3.0**: 窗口句柄智能探测（鼠标悬停窗口自动获取内边距与滚动条位置）。
-- [ ] **v0.4.0**: Wayland 兼容性支持（基于 PipeWire 抓取流与虚拟输入注入）。
+### Q1: Does Chinese or foreign text render as missing boxes or garbled symbols?
+- **No**. `scroll-shot` includes a pure-Rust dynamic FreeType rasterization engine that loads native Linux CJK vector fonts (e.g., Noto Sans CJK, Droid Sans) with antialiased rendering, natural baseline positioning, and full-width/half-width alignment.
+
+### Q2: Why does the OCR window prompt that the engine is not installed?
+- `scroll-shot` adheres to a lightweight (~1.9MB) and privacy-first design, avoiding bundled multi-megabyte models. It interfaces cleanly with system Tesseract. On Ubuntu/Debian, install with `sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim`.
+
+### Q3: Does the floating pin window stutter during drag or resize?
+- **No**. The window pipeline utilizes event coalescing and immediate graphic context flushes (`conn.flush()`) to ensure smooth 60~144Hz performance on 4K HiDPI screens.
 
 ---
 
 ## 📄 License
-MIT License.
+
+This project is licensed under the [MIT License](LICENSE).

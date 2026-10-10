@@ -1,17 +1,21 @@
 mod cli;
 mod gui;
+mod ocr;
 mod stitcher;
 mod x11;
 
 use clap::Parser;
 use cli::{CaptureRect, Cli};
+use gui::annotator::run_annotator;
 use gui::overlay::{run_interactive_overlay, UserAction};
 use gui::recorder::record_manual_scroll;
 use image::RgbaImage;
 use std::error::Error;
 use std::process::Command;
 use x11::capture::capture_screen_rect;
-use x11::clipboard::{copy_to_clipboard, encode_image_to_png, run_clipboard_daemon};
+use x11::clipboard::{
+    copy_to_clipboard, encode_image_to_png, run_clipboard_daemon, run_text_clipboard_daemon,
+};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
 use x11rb::protocol::Event;
@@ -22,6 +26,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 1. Check if invoked as internal clipboard daemon
     if args.serve_clipboard {
         return run_clipboard_daemon();
+    }
+    if args.serve_text_clipboard {
+        return run_text_clipboard_daemon();
     }
 
     // Connect to X11 server
@@ -145,16 +152,117 @@ fn handle_action<C: Connection>(
                 img.height()
             );
         }
+        UserAction::Pin(rect) => {
+            println!(
+                "📌 执行贴图置顶：区域 ({}, {}) {}x{}",
+                rect.x, rect.y, rect.width, rect.height
+            );
+
+            let img = match pre_captured {
+                Some(p) => p,
+                None => capture_screen_rect(conn, root, &rect)?,
+            };
+
+            // Copy directly to clipboard as well
+            let png_bytes = encode_image_to_png(&img)?;
+            let _ = copy_to_clipboard(&img);
+
+            if let Some(ref path) = args.output {
+                let _ = std::fs::write(path, &png_bytes);
+            }
+
+            send_desktop_notification(
+                "已贴图置顶到桌面",
+                &format!("尺寸: {}x{} 像素 (拖拽移动、滚轮缩放、Ctrl+滚轮调透明度)", img.width(), img.height()),
+            );
+            println!("📌 贴图已置顶显示在桌面最上层（可拖拽移动、滚轮缩放、Ctrl+滚轮调透明度、双击或ESC关闭）");
+            gui::pin::run_pin_window(conn, screen_num, img, rect.x as i32, rect.y as i32)?;
+        }
+        UserAction::Edit(rect) => {
+            println!(
+                "✏️ 进入截图批注模式：区域 ({}, {}) {}x{}",
+                rect.x, rect.y, rect.width, rect.height
+            );
+
+            let img = match pre_captured {
+                Some(p) => p,
+                None => capture_screen_rect(conn, root, &rect)?,
+            };
+
+            let edited = run_annotator(conn, screen_num, img)?;
+            if let Some((final_img, is_pin)) = edited {
+                let png_bytes = encode_image_to_png(&final_img)?;
+                copy_to_clipboard(&final_img)?;
+
+                if let Some(ref path) = args.output {
+                    std::fs::write(path, &png_bytes)?;
+                    println!("💾 已另存为文件: {}", path);
+                }
+
+                if is_pin {
+                    send_desktop_notification(
+                        "已贴图置顶到桌面",
+                        &format!("尺寸: {}x{} 像素 (拖拽移动、滚轮缩放、Ctrl+滚轮调透明度)", final_img.width(), final_img.height()),
+                    );
+                    println!("📌 批注后已贴图置顶显示在桌面最上层！");
+                    gui::pin::run_pin_window(conn, screen_num, final_img, rect.x as i32, rect.y as i32)?;
+                } else {
+                    send_desktop_notification(
+                        "批注截图已复制到剪切板",
+                        &format!("尺寸: {}x{} 像素，直接 Ctrl+V 即可粘贴！", final_img.width(), final_img.height()),
+                    );
+                    println!(
+                        "🎉 批注截图已直接放入系统剪贴板！(尺寸: {}x{}) 可直接 Ctrl+V 粘贴使用。",
+                        final_img.width(),
+                        final_img.height()
+                    );
+                }
+            } else {
+                println!("❌ 用户取消了批注。");
+            }
+        }
+        UserAction::Ocr(rect) => {
+            println!(
+                "🔤 执行屏幕 OCR 文字提取：区域 ({}, {}) {}x{}",
+                rect.x, rect.y, rect.width, rect.height
+            );
+
+            let img = match pre_captured {
+                Some(p) => p,
+                None => capture_screen_rect(conn, root, &rect)?,
+            };
+
+            gui::ocr_window::show_ocr_window(conn, screen_num, &img, rect.x as i32, rect.y as i32)?;
+        }
         UserAction::ScrollShot(rect) => {
             println!(
                 "📜 进入用户手动滚动模式：区域 ({}, {}) {}x{}",
                 rect.x, rect.y, rect.width, rect.height
             );
-            println!("👉 请随意向下滚动页面，滚动完毕后点击悬浮条上的【Done】按钮或按回车键！");
+            println!("👉 请随意向下滚动页面，滚动完毕后点击悬浮条上的【Done】按钮完成，或【OCR】直接提取整页文字，或【Edit】进入批注，或【Pin】贴图置顶！");
 
             let result = record_manual_scroll(conn, screen_num, &rect, pre_captured)?;
 
-            if let Some(final_img) = result {
+            if let Some((mut final_img, outcome)) = result {
+                if outcome == gui::recorder::ScrollOutcome::Ocr {
+                    println!("🔤 正在对长截图执行整页 OCR 识别...");
+                    gui::ocr_window::show_ocr_window(conn, screen_num, &final_img, rect.x as i32, rect.y as i32)?;
+                    return Ok(());
+                }
+
+                let mut should_pin = outcome == gui::recorder::ScrollOutcome::Pin;
+                if outcome == gui::recorder::ScrollOutcome::Edit {
+                    println!("✏️ 进入长截图批注模式...");
+                    if let Some((annotated, pin_from_annotator)) = run_annotator(conn, screen_num, final_img.clone())? {
+                        final_img = annotated;
+                        if pin_from_annotator {
+                            should_pin = true;
+                        }
+                    } else {
+                        println!("ℹ️ 退出批注，使用原长截图。");
+                    }
+                }
+
                 // Copy directly to clipboard (no saving needed)
                 let png_bytes = encode_image_to_png(&final_img)?;
                 copy_to_clipboard(&final_img)?;
@@ -165,20 +273,29 @@ fn handle_action<C: Connection>(
                     println!("💾 已另存为文件: {}", path);
                 }
 
-                send_desktop_notification(
-                    "长截图已复制到剪切板",
-                    &format!(
-                        "总尺寸: {}x{} 像素，直接 Ctrl+V 即可粘贴！",
+                if should_pin {
+                    send_desktop_notification(
+                        "长截图已贴图置顶到桌面",
+                        &format!("尺寸: {}x{} 像素 (拖拽移动、滚轮缩放、Ctrl+滚轮调透明度)", final_img.width(), final_img.height()),
+                    );
+                    println!("📌 长截图已贴图置顶显示在桌面最上层！");
+                    gui::pin::run_pin_window(conn, screen_num, final_img, rect.x as i32, rect.y as i32)?;
+                } else {
+                    send_desktop_notification(
+                        "长截图已复制到剪切板",
+                        &format!(
+                            "总尺寸: {}x{} 像素，直接 Ctrl+V 即可粘贴！",
+                            final_img.width(),
+                            final_img.height()
+                        ),
+                    );
+
+                    println!(
+                        "🎉 长截图已直接放入系统剪贴板！\n   尺寸: {}x{} 像素\n   无需保存，可直接 Ctrl+V 粘贴使用！",
                         final_img.width(),
                         final_img.height()
-                    ),
-                );
-
-                println!(
-                    "🎉 长截图已直接放入系统剪贴板！\n   尺寸: {}x{} 像素\n   无需保存，可直接 Ctrl+V 粘贴使用！",
-                    final_img.width(),
-                    final_img.height()
-                );
+                    );
+                }
             } else {
                 println!("❌ 用户取消了长截图。");
             }

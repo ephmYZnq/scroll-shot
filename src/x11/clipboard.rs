@@ -48,6 +48,161 @@ pub fn copy_to_clipboard(img: &RgbaImage) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Copy UTF-8 text directly to X11 CLIPBOARD by spawning a background text clipboard server
+pub fn copy_text_to_clipboard(text: &str) -> Result<(), Box<dyn Error>> {
+    let text_bytes = text.as_bytes();
+
+    let exe = std::env::current_exe()?;
+    let mut child = Command::new(exe)
+        .arg("--serve-text-clipboard")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text_bytes)?;
+        stdin.flush()?;
+    }
+
+    Ok(())
+}
+
+/// Run clipboard daemon for text (reads UTF-8 from stdin, owns CLIPBOARD and PRIMARY)
+pub fn run_text_clipboard_daemon() -> Result<(), Box<dyn Error>> {
+    let mut text_bytes = Vec::new();
+    io::stdin().read_to_end(&mut text_bytes)?;
+
+    if text_bytes.is_empty() {
+        return Ok(());
+    }
+
+    let (conn, screen_num) = x11rb::connect(None)?;
+    let screen = &conn.setup().roots[screen_num];
+    let root = screen.root;
+
+    // Intern required atoms for text clipboard
+    let clipboard_atom = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+    let primary_atom = AtomEnum::PRIMARY.into();
+    let targets_atom = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
+    let utf8_string_atom = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+    let string_atom = AtomEnum::STRING.into();
+    let text_atom = conn.intern_atom(false, b"TEXT")?.reply()?.atom;
+
+    // Create an unmapped hidden 1x1 window to own the selection
+    let win = conn.generate_id()?;
+    conn.create_window(
+        0,
+        win,
+        root,
+        0,
+        0,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+    )?;
+
+    // Acquire both CLIPBOARD and PRIMARY selections (supports Ctrl+V and middle-click)
+    conn.set_selection_owner(win, clipboard_atom, x11rb::CURRENT_TIME)?;
+    let _ = conn.set_selection_owner(win, primary_atom, x11rb::CURRENT_TIME);
+
+    let owner_reply = conn.get_selection_owner(clipboard_atom)?.reply()?;
+    if owner_reply.owner != win {
+        return Err("Failed to acquire X11 text clipboard selection".into());
+    }
+
+    conn.flush()?;
+
+    // Event loop to serve SelectionRequest
+    loop {
+        let event = match conn.wait_for_event() {
+            Ok(ev) => ev,
+            Err(_) => break,
+        };
+
+        match event {
+            Event::SelectionRequest(req) => {
+                if req.selection == clipboard_atom || req.selection == primary_atom {
+                    handle_text_selection_request(
+                        &conn,
+                        &req,
+                        targets_atom,
+                        utf8_string_atom,
+                        string_atom,
+                        text_atom,
+                        &text_bytes,
+                    )?;
+                }
+            }
+            Event::SelectionClear(ev) => {
+                if ev.selection == clipboard_atom {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = conn.destroy_window(win);
+    let _ = conn.flush();
+    Ok(())
+}
+
+fn handle_text_selection_request<C: Connection>(
+    conn: &C,
+    req: &SelectionRequestEvent,
+    targets_atom: Atom,
+    utf8_string_atom: Atom,
+    string_atom: Atom,
+    text_atom: Atom,
+    text_bytes: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let mut success = false;
+    let property = if req.property == x11rb::NONE {
+        req.target
+    } else {
+        req.property
+    };
+
+    if req.target == targets_atom {
+        let supported_targets = [targets_atom, utf8_string_atom, string_atom, text_atom];
+        conn.change_property32(
+            PropMode::REPLACE,
+            req.requestor,
+            property,
+            AtomEnum::ATOM,
+            &supported_targets,
+        )?;
+        success = true;
+    } else if req.target == utf8_string_atom || req.target == string_atom || req.target == text_atom {
+        conn.change_property8(
+            PropMode::REPLACE,
+            req.requestor,
+            property,
+            req.target,
+            text_bytes,
+        )?;
+        success = true;
+    }
+
+    let notify = SelectionNotifyEvent {
+        response_type: x11rb::protocol::xproto::SELECTION_NOTIFY_EVENT,
+        sequence: 0,
+        time: req.time,
+        requestor: req.requestor,
+        selection: req.selection,
+        target: req.target,
+        property: if success { property } else { x11rb::NONE },
+    };
+
+    conn.send_event(false, req.requestor, EventMask::NO_EVENT, notify)?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// Run clipboard daemon (reads PNG from stdin, owns XA_CLIPBOARD, serves requests until replaced)
 pub fn run_clipboard_daemon() -> Result<(), Box<dyn Error>> {
     let mut png_bytes = Vec::new();

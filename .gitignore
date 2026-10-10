@@ -1,1 +1,8 @@
 /target
+/scroll-shot
+**/*.rs.bk
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/

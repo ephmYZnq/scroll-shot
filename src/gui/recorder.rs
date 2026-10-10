@@ -13,6 +13,14 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::protocol::Event;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollOutcome {
+    Done,
+    Ocr,
+    Pin,
+    Edit,
+}
+
 /// Preview panel maximum width (fits right of capture area, or screen edge)
 const PREVIEW_W: u16 = 220;
 
@@ -22,7 +30,7 @@ pub fn record_manual_scroll<C: Connection>(
     screen_num: usize,
     rect: &CaptureRect,
     initial_frame: Option<RgbaImage>,
-) -> Result<Option<RgbaImage>, Box<dyn Error>> {
+) -> Result<Option<(RgbaImage, ScrollOutcome)>, Box<dyn Error>> {
     let setup = conn.setup();
     let screen = &setup.roots[screen_num];
     let root = screen.root;
@@ -40,7 +48,7 @@ pub fn record_manual_scroll<C: Connection>(
     let mut still_ticks = 0;
 
     // === Create floating status bar ===
-    let bar_w: i32 = 330;
+    let bar_w: i32 = 470;
     let bar_h: i32 = 44;
 
     let bar_x = (rect.x as i32 + ((rect.width as i32 - bar_w) / 2))
@@ -127,10 +135,13 @@ pub fn record_manual_scroll<C: Connection>(
         &canvas,
     )?;
 
-    let finish_btn_x = bar_w - 120;
-    let cancel_btn_x = bar_w - 40;
+    let finish_btn_x = bar_w - 276; // [Done]
+    let ocr_btn_x = bar_w - 212;    // [OCR]
+    let pin_btn_x = bar_w - 154;    // [Pin]
+    let edit_btn_x = bar_w - 96;    // [Edit]
+    let cancel_btn_x = bar_w - 34;  // [X]
 
-    let user_completed;
+    let mut user_completed: Option<ScrollOutcome> = None;
 
     'record_loop: loop {
         // Poll for user interaction (non-blocking)
@@ -147,11 +158,19 @@ pub fn record_manual_scroll<C: Connection>(
                         let mx = ev.event_x as i32;
                         let my = ev.event_y as i32;
                         if my >= 6 && my <= 38 {
-                            if mx >= finish_btn_x && mx < finish_btn_x + 75 {
-                                user_completed = true;
+                            if mx >= finish_btn_x && mx < finish_btn_x + 58 {
+                                user_completed = Some(ScrollOutcome::Done);
                                 break 'record_loop;
-                            } else if mx >= cancel_btn_x && mx < cancel_btn_x + 32 {
-                                user_completed = false;
+                            } else if mx >= ocr_btn_x && mx < ocr_btn_x + 52 {
+                                user_completed = Some(ScrollOutcome::Ocr);
+                                break 'record_loop;
+                            } else if mx >= pin_btn_x && mx < pin_btn_x + 52 {
+                                user_completed = Some(ScrollOutcome::Pin);
+                                break 'record_loop;
+                            } else if mx >= edit_btn_x && mx < edit_btn_x + 56 {
+                                user_completed = Some(ScrollOutcome::Edit);
+                                break 'record_loop;
+                            } else if mx >= cancel_btn_x && mx < cancel_btn_x + 28 {
                                 break 'record_loop;
                             }
                         }
@@ -159,11 +178,26 @@ pub fn record_manual_scroll<C: Connection>(
                 }
                 Event::KeyPress(ev) => {
                     if ev.detail == 9 {
-                        user_completed = false;
                         break 'record_loop;
                     }
                     if ev.detail == 36 || ev.detail == 65 {
-                        user_completed = true;
+                        // Enter or Space -> Done
+                        user_completed = Some(ScrollOutcome::Done);
+                        break 'record_loop;
+                    }
+                    if ev.detail == 32 {
+                        // 'o' -> OCR
+                        user_completed = Some(ScrollOutcome::Ocr);
+                        break 'record_loop;
+                    }
+                    if ev.detail == 33 {
+                        // 'p' -> Pin
+                        user_completed = Some(ScrollOutcome::Pin);
+                        break 'record_loop;
+                    }
+                    if ev.detail == 26 {
+                        // 'e' -> Edit
+                        user_completed = Some(ScrollOutcome::Edit);
                         break 'record_loop;
                     }
                 }
@@ -217,7 +251,7 @@ pub fn record_manual_scroll<C: Connection>(
     let _ = conn.destroy_window(preview_win);
     conn.flush()?;
 
-    if user_completed {
+    if let Some(outcome) = user_completed {
         // Allow desktop window 80ms to settle any ongoing smooth scrolling animation
         sleep(Duration::from_millis(80));
 
@@ -230,7 +264,11 @@ pub fn record_manual_scroll<C: Connection>(
             }
         }
 
-        Ok(canvas.into_image())
+        if let Some(img) = canvas.into_image() {
+            Ok(Some((img, outcome)))
+        } else {
+            Ok(None)
+        }
     } else {
         Ok(None)
     }
@@ -409,25 +447,55 @@ fn render_status_bar(buf: &mut [u8], w: usize, h: usize, current_height: u32) {
     let status_text = format!("Rec: {} px", current_height);
     draw_text(buf, w, h, 28, (h.saturating_sub(8)) / 2, &status_text, [240, 240, 240, 255]);
 
-    // Finish button [Done]
-    let fb_x = w - 120;
+    // Finish button [Done] (Green)
+    let fb_x = w - 276;
     let fb_y = 6;
     for r in fb_y..(fb_y + 32) {
-        for c in fb_x..(fb_x + 75) {
+        for c in fb_x..(fb_x + 58) {
             set_pixel(buf, w, h, c, r, [35, 125, 60, 255]);
         }
     }
-    draw_text(buf, w, h, fb_x + 18, fb_y + 12, "Done", [255, 255, 255, 255]);
+    draw_text(buf, w, h, fb_x + 13, fb_y + 12, "Done", [255, 255, 255, 255]);
 
-    // Cancel button [X]
-    let cb_x = w - 38;
+    // OCR button [OCR] (Amber/Orange)
+    let ob_x = w - 212;
+    let ob_y = 6;
+    for r in ob_y..(ob_y + 32) {
+        for c in ob_x..(ob_x + 52) {
+            set_pixel(buf, w, h, c, r, [185, 90, 20, 255]);
+        }
+    }
+    draw_text(buf, w, h, ob_x + 14, ob_y + 12, "OCR", [255, 255, 255, 255]);
+
+    // Pin button [Pin] (Purple)
+    let pb_x = w - 154;
+    let pb_y = 6;
+    for r in pb_y..(pb_y + 32) {
+        for c in pb_x..(pb_x + 52) {
+            set_pixel(buf, w, h, c, r, [100, 60, 165, 255]);
+        }
+    }
+    draw_text(buf, w, h, pb_x + 13, pb_y + 12, "Pin", [255, 255, 255, 255]);
+
+    // Edit button [Edit] (Blue)
+    let eb_x = w - 96;
+    let eb_y = 6;
+    for r in eb_y..(eb_y + 32) {
+        for c in eb_x..(eb_x + 56) {
+            set_pixel(buf, w, h, c, r, [45, 100, 215, 255]);
+        }
+    }
+    draw_text(buf, w, h, eb_x + 12, eb_y + 12, "Edit", [255, 255, 255, 255]);
+
+    // Cancel button [X] (Gray)
+    let cb_x = w - 34;
     let cb_y = 6;
     for r in cb_y..(cb_y + 32) {
-        for c in cb_x..(cb_x + 28) {
+        for c in cb_x..(cb_x + 26) {
             set_pixel(buf, w, h, c, r, [65, 70, 78, 255]);
         }
     }
-    draw_text(buf, w, h, cb_x + 10, cb_y + 12, "X", [220, 220, 220, 255]);
+    draw_text(buf, w, h, cb_x + 9, cb_y + 12, "X", [220, 220, 220, 255]);
 }
 
 #[inline(always)]

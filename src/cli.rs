@@ -68,6 +68,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub serve_clipboard: bool,
 
+    /// Internal text clipboard daemon mode
+    #[arg(long, hide = true)]
+    pub serve_text_clipboard: bool,
+
     /// Print detailed matching and displacement logs
     #[arg(short, long)]
     pub verbose: bool,

@@ -12,7 +12,10 @@ use x11rb::protocol::Event;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserAction {
     SingleShot(CaptureRect),
+    Pin(CaptureRect),
+    Edit(CaptureRect),
     ScrollShot(CaptureRect),
+    Ocr(CaptureRect),
     Cancel,
 }
 
@@ -295,6 +298,18 @@ pub fn run_interactive_overlay<C: Connection>(
                     // 's' -> Scroll Shot
                     result = UserAction::ScrollShot(current_rect);
                     break 'event_loop;
+                } else if ev.detail == 26 {
+                    // 'e' -> Edit
+                    result = UserAction::Edit(current_rect);
+                    break 'event_loop;
+                } else if ev.detail == 33 {
+                    // 'p' -> Pin to Desktop
+                    result = UserAction::Pin(current_rect);
+                    break 'event_loop;
+                } else if ev.detail == 32 {
+                    // 'o' -> OCR
+                    result = UserAction::Ocr(current_rect);
+                    break 'event_loop;
                 }
             }
             _ => {}
@@ -313,7 +328,19 @@ pub fn run_interactive_overlay<C: Connection>(
             let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
             Ok((result, Some(crop)))
         }
+        UserAction::Pin(rect) => {
+            let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
+            Ok((result, Some(crop)))
+        }
+        UserAction::Edit(rect) => {
+            let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
+            Ok((result, Some(crop)))
+        }
         UserAction::ScrollShot(rect) => {
+            let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
+            Ok((result, Some(crop)))
+        }
+        UserAction::Ocr(rect) => {
             let crop = crop_rect_from_bgrx(&orig_screen, screen_w as usize, screen_h as usize, &rect);
             Ok((result, Some(crop)))
         }
@@ -358,7 +385,7 @@ fn get_toolbar_buttons(
     screen_w: i32,
     screen_h: i32,
 ) -> Vec<ToolbarButton> {
-    let tb_w = 340;
+    let tb_w = 540;
     let tb_h = 44;
 
     // Position toolbar centered horizontally under rect, or at screen bottom
@@ -376,27 +403,51 @@ fn get_toolbar_buttons(
 
     vec![
         ToolbarButton {
-            x: tb_x + 12,
+            x: tb_x + 8,
             y: tb_y + 6,
-            width: 100,
+            width: 78,
             height: 32,
-            label: "📸 Shot",
+            label: "Shot",
             action: UserAction::SingleShot(*rect),
         },
         ToolbarButton {
-            x: tb_x + 120,
+            x: tb_x + 92,
             y: tb_y + 6,
-            width: 110,
+            width: 74,
             height: 32,
-            label: "📜 Scroll",
+            label: "Pin",
+            action: UserAction::Pin(*rect),
+        },
+        ToolbarButton {
+            x: tb_x + 172,
+            y: tb_y + 6,
+            width: 74,
+            height: 32,
+            label: "Edit",
+            action: UserAction::Edit(*rect),
+        },
+        ToolbarButton {
+            x: tb_x + 252,
+            y: tb_y + 6,
+            width: 74,
+            height: 32,
+            label: "OCR",
+            action: UserAction::Ocr(*rect),
+        },
+        ToolbarButton {
+            x: tb_x + 332,
+            y: tb_y + 6,
+            width: 96,
+            height: 32,
+            label: "Scroll",
             action: UserAction::ScrollShot(*rect),
         },
         ToolbarButton {
-            x: tb_x + 238,
+            x: tb_x + 434,
             y: tb_y + 6,
-            width: 90,
+            width: 98,
             height: 32,
-            label: "✕ Cancel",
+            label: "Cancel",
             action: UserAction::Cancel,
         },
     ]
@@ -449,9 +500,9 @@ fn render_composite(
     // 6. Draw floating pill toolbar
     let buttons = get_toolbar_buttons(r, screen_w as i32, screen_h as i32);
     if let Some(first_btn) = buttons.first() {
-        let tb_bg_x = first_btn.x - 12;
+        let tb_bg_x = first_btn.x - 8;
         let tb_bg_y = first_btn.y - 6;
-        let tb_bg_w = 340;
+        let tb_bg_w = 540;
         let tb_bg_h = 44;
 
         // Dark pill background (RGB: 32, 34, 38)
@@ -485,19 +536,119 @@ fn render_composite(
             let bw = btn.width as usize;
             let bh = btn.height as usize;
 
-            let (btn_bg, text_color) = match btn.action {
-                UserAction::SingleShot(_) => ([50, 80, 150, 255], [255, 255, 255, 255]),
-                UserAction::ScrollShot(_) => ([40, 110, 60, 255], [255, 255, 255, 255]),
-                UserAction::Cancel => ([60, 64, 72, 255], [220, 220, 220, 255]),
+            let (btn_bg, text_color, icon) = match btn.action {
+                UserAction::SingleShot(_) => ([50, 80, 150, 255], [255, 255, 255, 255], &ICON_SHOT),
+                UserAction::Pin(_) => ([100, 60, 165, 255], [255, 255, 255, 255], &ICON_PIN),
+                UserAction::Edit(_) => ([50, 95, 215, 255], [255, 255, 255, 255], &ICON_EDIT),
+                UserAction::Ocr(_) => ([185, 90, 20, 255], [255, 255, 255, 255], &ICON_OCR),
+                UserAction::ScrollShot(_) => ([40, 110, 60, 255], [255, 255, 255, 255], &ICON_SCROLL),
+                UserAction::Cancel => ([60, 64, 72, 255], [220, 220, 220, 255], &ICON_CANCEL),
             };
 
             draw_fill_rect(buf, screen_w, screen_h, bx, by, bw, bh, btn_bg);
             draw_rect_border(buf, screen_w, screen_h, bx, by, bw, bh, [100, 110, 125, 255], 1);
 
-            let label_len = btn.label.chars().count();
-            let text_x = bx + (bw.saturating_sub(label_len * 8)) / 2;
-            let text_y = by + (bh.saturating_sub(8)) / 2;
-            draw_text(buf, screen_w, screen_h, text_x, text_y, btn.label, text_color);
+            let content_w = 8 + 6 + btn.label.len() * 8;
+            let start_x = bx + (bw.saturating_sub(content_w)) / 2;
+            let start_y = by + (bh.saturating_sub(8)) / 2;
+            draw_icon(buf, screen_w, screen_h, start_x, start_y, icon, text_color);
+            draw_text(buf, screen_w, screen_h, start_x + 14, start_y, btn.label, text_color);
+        }
+    }
+}
+
+const ICON_SHOT: [u8; 8] = [
+    0b00111100,
+    0b01111110,
+    0b11011011,
+    0b10000001,
+    0b10011001,
+    0b10011001,
+    0b11111111,
+    0b00000000,
+];
+
+const ICON_PIN: [u8; 8] = [
+    0b00111100,
+    0b01111110,
+    0b00111100,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00010000,
+];
+
+const ICON_EDIT: [u8; 8] = [
+    0b00000011,
+    0b00000111,
+    0b00001110,
+    0b00011100,
+    0b00111000,
+    0b01110000,
+    0b11100000,
+    0b11000000,
+];
+
+const ICON_OCR: [u8; 8] = [
+    0b11111111,
+    0b10011001,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b10011001,
+    0b11111111,
+];
+
+const ICON_SCROLL: [u8; 8] = [
+    0b00011000,
+    0b00111100,
+    0b01111110,
+    0b00011000,
+    0b00011000,
+    0b01111110,
+    0b00111100,
+    0b00011000,
+];
+
+const ICON_CANCEL: [u8; 8] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b00011000,
+    0b00111100,
+    0b01100110,
+    0b11000011,
+    0b00000000,
+];
+
+fn draw_icon(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+    icon: &[u8; 8],
+    color: [u8; 4],
+) {
+    for row in 0..8 {
+        let py = y + row;
+        if py >= h {
+            break;
+        }
+        let bits = icon[row];
+        for col in 0..8 {
+            let px = x + col;
+            if px >= w {
+                break;
+            }
+            if (bits & (1 << (7 - col))) != 0 {
+                let offset = (py * w + px) * 4;
+                if offset + 3 < buf.len() {
+                    buf[offset..offset + 4].copy_from_slice(&color);
+                }
+            }
         }
     }
 }

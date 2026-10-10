@@ -1,0 +1,35 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libx11-dev libxtst-dev libfreetype6-dev tesseract-ocr tesseract-ocr-chi-sim
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cargo Check
+      run: cargo check --verbose
+
+    - name: Run Tests
+      run: cargo test --verbose
+
+    - name: Build Release
+      run: cargo build --release --verbose
