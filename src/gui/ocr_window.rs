@@ -205,6 +205,18 @@ pub fn show_ocr_window<C: Connection>(
         win,
         &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
     )?;
+    let _ = conn.set_input_focus(
+        x11rb::protocol::xproto::InputFocus::PARENT,
+        win,
+        x11rb::CURRENT_TIME,
+    );
+    let _ = conn.grab_keyboard(
+        false,
+        win,
+        x11rb::CURRENT_TIME,
+        x11rb::protocol::xproto::GrabMode::ASYNC,
+        x11rb::protocol::xproto::GrabMode::ASYNC,
+    );
     conn.flush()?;
 
     // Perform initial OCR attempt

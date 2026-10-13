@@ -50,7 +50,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         (action, None)
     } else {
         // Run full-screen interactive freeze-frame overlay with handles and toolbar
-        run_interactive_overlay(&conn, screen_num)?
+        match run_interactive_overlay(&conn, screen_num) {
+            Ok(res) => res,
+            Err(e) => {
+                send_desktop_notification(
+                    "scroll-shot 抓屏启动失败",
+                    &format!("错误详情: {}", e),
+                );
+                return Err(e);
+            }
+        }
     };
 
     handle_action(&conn, screen_num, action, pre_captured, &args)?;

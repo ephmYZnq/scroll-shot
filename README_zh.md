@@ -8,13 +8,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Binary Size](https://img.shields.io/badge/Binary%20Size-~1.9MB-blue.svg)](https://github.com/ephmYZnq/scroll-shot/releases)
 
-[English](README.md) | [简体中文](README_zh.md) | [🚀 直接下载 v0.2.0 发行版](https://github.com/ephmYZnq/scroll-shot/releases/latest)
+[English](README.md) | [简体中文](README_zh.md) | [🚀 直接下载 v0.3.0 发行版](https://github.com/ephmYZnq/scroll-shot/releases/latest)
 
 </div>
 
 ---
 
-`scroll-shot` 是一个采用纯 Rust 编写的系统级截图与长截图工具，专注于在 Linux X11 桌面环境下提供**极速冷启动、低内存占用、单二进制绿色免安装（<2MB）、零重型 GUI 依赖**以及 **100% 点对点原画质长图拼接**能力。
+`scroll-shot` 是一个采用纯 Rust 编写的系统级截图与长截图工具，专注于在 Linux 桌面环境（**同时支持 X11 与 GNOME Wayland**）下提供**极速冷启动、低内存占用、单二进制绿色免安装（<2MB）、零重型 GUI 依赖**以及 **100% 点对点原画质长图拼接**能力。
 
 ---
 
@@ -55,9 +55,9 @@
 - 用户使用**鼠标滚轮、触控板或直接拖拽页面滚动条**自由滚动，程序以高帧率实时捕捉新增内容并无损拼接。
 - 滚到满意位置后，点击录制条上的 **`[Done]`** 按钮（或按回车），一键完成并写入剪贴板。
 
-### 7. 🖥️ 全屏 GUI 冻结遮罩与快捷键
-- 启动后自动弹出对标系统原生体验的全屏暗色冻结遮罩。
-- 支持鼠标拖拽框选、八方向手柄缩放调节。
+### 7. 🖥️ X11 & GNOME Wayland 双引擎自适应抓屏 + 全局快捷键
+- **双引擎自适应抓屏**：在 X11 (`Xorg`) 下采用原生 `XGetImage` 零拷贝抓屏；在 GNOME Wayland 下自动无缝切换至合成器底层 D-Bus 抓屏（`libgio-2.0.so.0` + `/dev/shm` 纯内存中转），无闪屏、无权限弹窗。
+- 启动后自动弹出对标系统原生体验的全屏暗色冻结遮罩，支持鼠标拖拽框选、八方向手柄缩放调节。
 - **全局快捷键【Ctrl + 1】秒启**：专为全屏开发、虚拟机操作定制，无需切换窗口找图标。
 
 ---

@@ -120,6 +120,18 @@ pub fn run_annotator<C: Connection>(
     conn.create_gc(gc, win, &CreateGCAux::new())?;
 
     conn.map_window(win)?;
+    let _ = conn.set_input_focus(
+        x11rb::protocol::xproto::InputFocus::PARENT,
+        win,
+        x11rb::CURRENT_TIME,
+    );
+    let _ = conn.grab_keyboard(
+        false,
+        win,
+        x11rb::CURRENT_TIME,
+        x11rb::protocol::xproto::GrabMode::ASYNC,
+        x11rb::protocol::xproto::GrabMode::ASYNC,
+    );
     conn.flush()?;
 
     let mut current_tool = Tool::Rect;

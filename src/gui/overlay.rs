@@ -4,10 +4,35 @@ use image::RgbaImage;
 use std::error::Error;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat, Window,
-    WindowClass,
+    ConfigureWindowAux, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext,
+    GrabMode, ImageFormat, InputFocus, PropMode, StackMode, Window, WindowClass,
 };
 use x11rb::protocol::Event;
+use x11rb::wrapper::ConnectionExt as _;
+
+struct OverlayLockGuard;
+
+impl OverlayLockGuard {
+    fn acquire() -> Option<Self> {
+        let lock_path = "/tmp/scroll-shot-overlay.lock";
+        let my_pid = std::process::id();
+        if let Ok(content) = std::fs::read_to_string(lock_path) {
+            if let Ok(other_pid) = content.trim().parse::<u32>() {
+                if other_pid != my_pid && std::path::Path::new(&format!("/proc/{}", other_pid)).exists() {
+                    return None;
+                }
+            }
+        }
+        let _ = std::fs::write(lock_path, my_pid.to_string());
+        Some(Self)
+    }
+}
+
+impl Drop for OverlayLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file("/tmp/scroll-shot-overlay.lock");
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserAction {
@@ -44,29 +69,20 @@ pub fn run_interactive_overlay<C: Connection>(
     conn: &C,
     screen_num: usize,
 ) -> Result<(UserAction, Option<RgbaImage>), Box<dyn Error>> {
+    let _lock = match OverlayLockGuard::acquire() {
+        Some(g) => g,
+        None => return Ok((UserAction::Cancel, None)),
+    };
+
     let setup = conn.setup();
     let screen = &setup.roots[screen_num];
     let root = screen.root;
     let screen_w = screen.width_in_pixels;
     let screen_h = screen.height_in_pixels;
 
-    // 1. Freeze screen: Capture the entire root screen upfront
-    let orig_screen_reply = conn
-        .get_image(
-            ImageFormat::Z_PIXMAP,
-            root,
-            0,
-            0,
-            screen_w,
-            screen_h,
-            !0,
-        )?
-        .reply()?;
-
-    let mut orig_screen = vec![0u8; (screen_w as usize) * (screen_h as usize) * 4];
-    let src_bytes = &orig_screen_reply.data;
-    let len = orig_screen.len().min(src_bytes.len());
-    orig_screen[..len].copy_from_slice(&src_bytes[..len]);
+    // 1. Freeze screen: Capture the entire root screen upfront (supports both X11 and GNOME Wayland)
+    let orig_screen =
+        crate::x11::capture::capture_raw_bgra_rect(conn, root, 0, 0, screen_w, screen_h)?;
 
     // Create darkened background buffer (35% brightness veil)
     let mut dark_screen = orig_screen.clone();
@@ -103,7 +119,47 @@ pub fn run_interactive_overlay<C: Connection>(
     let gc = conn.generate_id()?;
     conn.create_gc(gc, win, &CreateGCAux::new())?;
 
+    if let (Ok(wm_state), Ok(state_above), Ok(atom_type)) = (
+        conn.intern_atom(false, b"_NET_WM_STATE"),
+        conn.intern_atom(false, b"_NET_WM_STATE_ABOVE"),
+        conn.intern_atom(false, b"ATOM"),
+    ) {
+        if let (Ok(wm_state_r), Ok(state_above_r), Ok(atom_type_r)) =
+            (wm_state.reply(), state_above.reply(), atom_type.reply())
+        {
+            let _ = conn.change_property32(
+                PropMode::REPLACE,
+                win,
+                wm_state_r.atom,
+                atom_type_r.atom,
+                &[state_above_r.atom],
+            );
+        }
+    }
+
     conn.map_window(win)?;
+    let _ = conn.configure_window(
+        win,
+        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+    );
+    let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+    let _ = conn.grab_keyboard(
+        false,
+        win,
+        x11rb::CURRENT_TIME,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+    );
+    let _ = conn.grab_pointer(
+        true,
+        win,
+        EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+        x11rb::NONE,
+        x11rb::NONE,
+        x11rb::CURRENT_TIME,
+    );
     conn.flush()?;
 
     // Initial default selection box (centered 600x400)

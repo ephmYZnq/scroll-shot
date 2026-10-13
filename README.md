@@ -8,13 +8,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Binary Size](https://img.shields.io/badge/Binary%20Size-~1.9MB-blue.svg)](https://github.com/ephmYZnq/scroll-shot/releases)
 
-[English](README.md) | [简体中文](README_zh.md) | [🚀 Download v0.2.0 Release](https://github.com/ephmYZnq/scroll-shot/releases/latest)
+[English](README.md) | [简体中文](README_zh.md) | [🚀 Download v0.3.0 Release](https://github.com/ephmYZnq/scroll-shot/releases/latest)
 
 </div>
 
 ---
 
-`scroll-shot` is a native system screenshot and scrolling capture (long screenshot) utility written in pure Rust. It is engineered specifically for Linux desktop environments, delivering **instant cold startup, low memory footprint, a single standalone binary (<2MB), zero heavy GUI/framework dependencies**, and **100% 1:1 pixel-lossless stitching quality**.
+`scroll-shot` is a native system screenshot and scrolling capture (long screenshot) utility written in pure Rust. It is engineered specifically for Linux desktop environments (**X11 & GNOME Wayland**), delivering **instant cold startup, low memory footprint, a single standalone binary (<2MB), zero heavy GUI/framework dependencies**, and **100% 1:1 pixel-lossless stitching quality**.
 
 ---
 
@@ -57,7 +57,8 @@
   - Scroll naturally using **mouse wheel, trackpad gestures, or by dragging the scrollbar**. The engine captures incoming frames at high frame rates and stitches them with sub-pixel alignment.
   - When finished, click **`[Done]`** on the toolbar (or hit `Enter`) to finalize and copy directly to your clipboard.
 
-### 7. 🖥️ Fullscreen Freeze Mask & Global Hotkey
+### 7. 🖥️ X11 & GNOME Wayland Dual-Engine Capture + Global Hotkey
+- **Dual-Backend Adaptive Capture**: Uses zero-copy `XGetImage` on X11 (`Xorg`) and automatically switches to direct GNOME Wayland compositor D-Bus capture (`libgio-2.0.so.0` + `/dev/shm` in-memory exchange) under Wayland—no screen flash and no permission popups.
 - Launches with an instant dark freeze mask modeled after native desktop screen capture tools.
 - Drag to select region, resize with 8-direction handles, or move selection box.
 - **Global Hotkey [Ctrl + 1]**: Instant summons anywhere on your desktop—ideal for full-screen workflows and virtual machine operations.

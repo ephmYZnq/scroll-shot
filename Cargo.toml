@@ -1,12 +1,12 @@
 [package]
 name = "scroll-shot"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Ultra-lightweight, high-resolution, pixel-perfect scrolling screenshot and desktop pinning tool for Linux"
 license = "MIT"
 repository = "https://github.com/ephmYZnq/scroll-shot"
 readme = "README.md"
-keywords = ["screenshot", "scrolling-screenshot", "ocr", "x11", "linux"]
+keywords = ["screenshot", "scrolling-screenshot", "ocr", "x11", "wayland"]
 categories = ["command-line-utilities", "multimedia::images"]
 
 [dependencies]

@@ -9,9 +9,10 @@ use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     ConfigureWindowAux, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext,
-    ImageFormat, Window, WindowClass,
+    ImageFormat, PropMode, StackMode, Window, WindowClass,
 };
 use x11rb::protocol::Event;
+use x11rb::wrapper::ConnectionExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollOutcome {
@@ -117,9 +118,37 @@ pub fn record_manual_scroll<C: Connection>(
     let preview_gc = conn.generate_id()?;
     conn.create_gc(preview_gc, preview_win, &CreateGCAux::new())?;
 
+    if let (Ok(wm_state), Ok(state_above), Ok(atom_type)) = (
+        conn.intern_atom(false, b"_NET_WM_STATE"),
+        conn.intern_atom(false, b"_NET_WM_STATE_ABOVE"),
+        conn.intern_atom(false, b"ATOM"),
+    ) {
+        if let (Ok(wm_state_r), Ok(state_above_r), Ok(atom_type_r)) =
+            (wm_state.reply(), state_above.reply(), atom_type.reply())
+        {
+            for &w in &[bar_win, preview_win] {
+                let _ = conn.change_property32(
+                    PropMode::REPLACE,
+                    w,
+                    wm_state_r.atom,
+                    atom_type_r.atom,
+                    &[state_above_r.atom],
+                );
+            }
+        }
+    }
+
     // Map both windows
     conn.map_window(bar_win)?;
     conn.map_window(preview_win)?;
+    let _ = conn.configure_window(
+        bar_win,
+        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+    );
+    let _ = conn.configure_window(
+        preview_win,
+        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+    );
     conn.flush()?;
 
     // Status bar pixel buffer
