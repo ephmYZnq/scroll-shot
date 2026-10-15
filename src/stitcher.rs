@@ -119,13 +119,14 @@ pub struct MatchResult {
     pub avg_diff: f32,
 }
 
-/// Calculate 1D vertical shift using high-contrast adaptive template matching + dense full-overlap verification.
+/// Calculate 1D vertical shift using high-contrast dual-strategy template matching + dense full-overlap verification.
 ///
 /// Guaranteed:
-/// 1. Evaluates EVERY row without skipping in the template (step_y = 1) for sub-single-pixel precision.
-/// 2. Selects the template window with the highest vertical edge/text contrast to avoid blank spaces.
-/// 3. Validates trough sharpness (V-shape) so flat/ambiguous matches are rejected.
-/// 4. Densely verifies the entire overlapping region to completely eliminate text seams and duplicated strokes.
+/// 1. Uses dual templates (forward from curr_frame upper zone and backward from prev_frame lower zone)
+///    supporting shifts from 2px up to 75%+ of the viewport height.
+/// 2. Evaluates EVERY row without skipping in the template (step_y = 1) for single-pixel precision.
+/// 3. Validates trough sharpness (V-shape) to reject ambiguous matches.
+/// 4. Densely verifies the overlapping region while trimming stationary sticky headers and footers.
 pub fn find_vertical_shift(
     prev_frame: &RgbaImage,
     curr_frame: &RgbaImage,
@@ -151,111 +152,105 @@ pub fn find_vertical_shift(
         };
     }
 
-    let template_height = (h / 4).clamp(60, 140);
-    let bottom_margin = 15;
-
-    if h <= template_height + bottom_margin + 20 {
-        return MatchResult {
-            delta_y: 0,
-            avg_diff: zero_diff,
-        };
-    }
-
-    // Step 2: Dynamically hunt for the region with HIGHEST vertical texture (text/icons/contrast)
-    // in the lower 60% of prev_frame
-    let (prev_template_top, edge_energy) = find_best_template_y(prev_frame, template_height, bottom_margin);
-
-    // If the region has virtually zero contrast (e.g. pure blank white page), require strict motion
-    if edge_energy < 50 {
-        return MatchResult {
-            delta_y: 0,
-            avg_diff: zero_diff,
-        };
-    }
-
-    // Candidate shifts: search from 2px up to max_shift
+    let template_height = (h / 5).clamp(40, 100);
     let min_shift = 2;
-    let max_shift = max_search_y
-        .unwrap_or(prev_template_top)
-        .min(prev_template_top)
-        .min(h - 30);
-
-    if max_shift < min_shift {
-        return MatchResult {
-            delta_y: 0,
-            avg_diff: zero_diff,
-        };
-    }
-
     let step_x = (w / 160).max(1);
 
-    let mut best_candidate_shift = 0;
-    let mut min_template_diff = f32::MAX;
-    let mut second_best_diff = f32::MAX;
+    if h <= template_height + 30 {
+        return MatchResult {
+            delta_y: 0,
+            avg_diff: zero_diff,
+        };
+    }
 
-    // Step 3: Candidate search with EVERY single vertical row checked (step_y = 1)
-    for shift in min_shift..=max_shift {
-        let curr_top = prev_template_top - shift;
-        let diff = compute_sad_at_shift(
+    // Strategy 1: Forward Template from UPPER zone of curr_frame [12% .. 38%].
+    // When curr_frame has scrolled down, its upper content matches prev_frame at `curr_top + shift`.
+    // This allows detecting LARGE shifts (up to ~75% of viewport height).
+    let min_curr_y = (h * 12 / 100).max(10);
+    let max_curr_y = (h * 40 / 100).saturating_sub(template_height).max(min_curr_y);
+    let (curr_template_top, energy_1) = find_best_template_window(curr_frame, template_height, min_curr_y, max_curr_y);
+
+    let max_shift_1 = max_search_y
+        .unwrap_or(h)
+        .min(h.saturating_sub(curr_template_top + template_height + 10));
+
+    let cand_1 = if energy_1 >= 40 && max_shift_1 >= min_shift {
+        find_candidate_forward(
+            prev_frame,
+            curr_frame,
+            w,
+            curr_template_top,
+            template_height,
+            min_shift,
+            max_shift_1,
+            step_x,
+        )
+    } else {
+        None
+    };
+
+    // Strategy 2: Backward Template from MIDDLE-LOWER zone of prev_frame [35% .. 75%].
+    // When prev_frame content scrolled up, it matches curr_frame at `prev_top - shift`.
+    let min_prev_y = (h * 35 / 100).max(10);
+    let max_prev_y = (h * 75 / 100).saturating_sub(template_height).max(min_prev_y);
+    let (prev_template_top, energy_2) = find_best_template_window(prev_frame, template_height, min_prev_y, max_prev_y);
+
+    let max_shift_2 = max_search_y
+        .unwrap_or(prev_template_top)
+        .min(prev_template_top)
+        .min(h - 20);
+
+    let cand_2 = if energy_2 >= 40 && max_shift_2 >= min_shift {
+        find_candidate_backward(
             prev_frame,
             curr_frame,
             w,
             prev_template_top,
-            curr_top,
             template_height,
+            min_shift,
+            max_shift_2,
             step_x,
-        );
+        )
+    } else {
+        None
+    };
 
-        if diff < min_template_diff {
-            second_best_diff = min_template_diff;
-            min_template_diff = diff;
-            best_candidate_shift = shift;
-        } else if diff < second_best_diff {
-            second_best_diff = diff;
+    // Select best candidate
+    let best_candidate = match (cand_1, cand_2) {
+        (Some(c1), Some(c2)) => {
+            if c1.shift == c2.shift {
+                Some(c1)
+            } else if c1.diff <= c2.diff {
+                Some(c1)
+            } else {
+                Some(c2)
+            }
         }
-    }
+        (Some(c1), None) => Some(c1),
+        (None, Some(c2)) => Some(c2),
+        (None, None) => None,
+    };
 
-    // Step 4: Quality Checks
-    // 4.1 Check absolute template match error (< 8.0)
-    if min_template_diff > 8.0 || best_candidate_shift == 0 {
+    let Some(cand) = best_candidate else {
         return MatchResult {
             delta_y: 0,
             avg_diff: zero_diff,
         };
-    }
+    };
 
-    // 4.2 Trough uniqueness check: Ensure this is a clear local minimum (not flat ambiguity)
-    if best_candidate_shift > min_shift && best_candidate_shift < max_shift {
-        let prev_s = compute_sad_at_shift(
-            prev_frame, curr_frame, w,
-            prev_template_top, prev_template_top - (best_candidate_shift - 1),
-            template_height, step_x,
-        );
-        let next_s = compute_sad_at_shift(
-            prev_frame, curr_frame, w,
-            prev_template_top, prev_template_top - (best_candidate_shift + 1),
-            template_height, step_x,
-        );
-        // Both adjacent rows must have higher error (sharp V-trough)
-        if prev_s <= min_template_diff || next_s <= min_template_diff {
-            return MatchResult {
-                delta_y: 0,
-                avg_diff: zero_diff,
-            };
-        }
-    }
+    // Step 4: Full-Overlap Verification (with stationary header/footer trimming)
+    let overlap_err = compute_overlap_sad(prev_frame, curr_frame, cand.shift);
 
-    // Step 5: Dense Full-Overlap Verification (checking every 2nd row across the ENTIRE overlap)
-    let overlap_err = compute_overlap_sad(prev_frame, curr_frame, best_candidate_shift);
+    // If template match was exceptionally confident (diff < 2.0), allow slightly higher overlap_err (up to 8.5)
+    // in case a small stationary widget exists outside the trimmed margins.
+    let max_allowed_err = if cand.diff < 2.0 { 8.5 } else { 6.5 };
 
-    // Overlap error must be exceptionally low (< 6.5) to guarantee seamless pixel alignment
-    if overlap_err <= 6.5 {
+    if overlap_err <= max_allowed_err {
         MatchResult {
-            delta_y: best_candidate_shift,
+            delta_y: cand.shift,
             avg_diff: overlap_err,
         }
     } else {
-        // Rejected false match
         MatchResult {
             delta_y: 0,
             avg_diff: zero_diff,
@@ -263,25 +258,134 @@ pub fn find_vertical_shift(
     }
 }
 
-/// Find the vertical template window with highest edge/gradient energy
-fn find_best_template_y(img: &RgbaImage, template_h: u32, bottom_margin: u32) -> (u32, u64) {
-    let (w, h) = img.dimensions();
-    if h <= template_h + bottom_margin {
-        return (0, 0);
+#[derive(Debug, Clone, Copy)]
+struct ShiftCandidate {
+    shift: u32,
+    diff: f32,
+}
+
+fn find_candidate_forward(
+    prev: &RgbaImage,
+    curr: &RgbaImage,
+    w: u32,
+    curr_top: u32,
+    template_h: u32,
+    min_shift: u32,
+    max_shift: u32,
+    step_x: u32,
+) -> Option<ShiftCandidate> {
+    let mut best_shift = 0;
+    let mut min_diff = f32::MAX;
+
+    for shift in min_shift..=max_shift {
+        let prev_top = curr_top + shift;
+        let diff = compute_sad_at_shift(
+            prev,
+            curr,
+            w,
+            prev_top,
+            curr_top,
+            template_h,
+            step_x,
+        );
+        if diff < min_diff {
+            min_diff = diff;
+            best_shift = shift;
+        }
     }
 
-    // Search strictly in the middle scrollable zone (25% to 70% of viewport height).
-    // This strictly avoids:
-    // 1. Sticky headers / navigation bars at the top (0% .. 20%)
-    // 2. Floating action buttons / "Scroll to bottom" buttons / sticky footers at the bottom (75% .. 100%)
-    let min_y = (h * 25 / 100).max(10);
-    let max_y = (h * 70 / 100).saturating_sub(template_h).max(min_y);
-    if min_y >= max_y {
-        return (max_y, 100);
+    if min_diff > 8.0 || best_shift == 0 {
+        return None;
+    }
+
+    // Trough uniqueness check
+    if best_shift > min_shift && best_shift < max_shift {
+        let prev_s = compute_sad_at_shift(
+            prev, curr, w,
+            curr_top + (best_shift - 1), curr_top,
+            template_h, step_x,
+        );
+        let next_s = compute_sad_at_shift(
+            prev, curr, w,
+            curr_top + (best_shift + 1), curr_top,
+            template_h, step_x,
+        );
+        if prev_s <= min_diff || next_s <= min_diff {
+            return None;
+        }
+    }
+
+    Some(ShiftCandidate { shift: best_shift, diff: min_diff })
+}
+
+fn find_candidate_backward(
+    prev: &RgbaImage,
+    curr: &RgbaImage,
+    w: u32,
+    prev_top: u32,
+    template_h: u32,
+    min_shift: u32,
+    max_shift: u32,
+    step_x: u32,
+) -> Option<ShiftCandidate> {
+    let mut best_shift = 0;
+    let mut min_diff = f32::MAX;
+
+    for shift in min_shift..=max_shift {
+        let curr_top = prev_top - shift;
+        let diff = compute_sad_at_shift(
+            prev,
+            curr,
+            w,
+            prev_top,
+            curr_top,
+            template_h,
+            step_x,
+        );
+        if diff < min_diff {
+            min_diff = diff;
+            best_shift = shift;
+        }
+    }
+
+    if min_diff > 8.0 || best_shift == 0 {
+        return None;
+    }
+
+    // Trough uniqueness check
+    if best_shift > min_shift && best_shift < max_shift {
+        let prev_s = compute_sad_at_shift(
+            prev, curr, w,
+            prev_top, prev_top - (best_shift - 1),
+            template_h, step_x,
+        );
+        let next_s = compute_sad_at_shift(
+            prev, curr, w,
+            prev_top, prev_top - (best_shift + 1),
+            template_h, step_x,
+        );
+        if prev_s <= min_diff || next_s <= min_diff {
+            return None;
+        }
+    }
+
+    Some(ShiftCandidate { shift: best_shift, diff: min_diff })
+}
+
+/// Find the vertical template window with highest edge/gradient energy in img within [min_y..=max_y]
+fn find_best_template_window(
+    img: &RgbaImage,
+    template_h: u32,
+    min_y: u32,
+    max_y: u32,
+) -> (u32, u64) {
+    let (w, h) = img.dimensions();
+    if h <= template_h || min_y >= max_y {
+        return (min_y.min(h.saturating_sub(template_h)), 100);
     }
 
     let step_x = (w / 80).max(1);
-    let mut best_y = max_y;
+    let mut best_y = min_y;
     let mut max_grad: u64 = 0;
 
     for y in (min_y..=max_y).step_by(3) {
@@ -418,12 +522,20 @@ pub fn compute_overlap_sad(prev: &RgbaImage, curr: &RgbaImage, shift_y: u32) -> 
     let overlap_h = h - shift_y;
     let step_x = (w / 120).max(1);
     // Dense verification: step by 2 rows across the entire overlap
-    let step_y = 2;
+    // Skip potential stationary sticky headers (top 15% / up to 35px)
+    // and sticky footers / floating action buttons (bottom 15% / up to 35px)
+    let margin = (overlap_h * 15 / 100).min(35);
+    let (start_r, end_r) = if overlap_h > margin * 2 + 10 {
+        (margin, overlap_h - margin)
+    } else {
+        (0, overlap_h)
+    };
 
     let mut total_diff: u64 = 0;
     let mut count: u64 = 0;
+    let step_y = 2;
 
-    for r in (0..overlap_h).step_by(step_y) {
+    for r in (start_r..end_r).step_by(step_y) {
         let py = r + shift_y; // In prev_frame, content was at r + shift_y
         let cy = r;           // In curr_frame, content has moved up to r
 
@@ -538,6 +650,84 @@ mod tests {
         let res = find_vertical_shift(&frame1, &frame2, None);
         assert_eq!(res.delta_y, shift_amount);
         assert!(res.avg_diff < 0.5);
+    }
+
+    #[test]
+    fn test_find_vertical_shift_large() {
+        let width = 300;
+        let height = 420;
+        let shift_amount = 200;
+
+        let frame1 = RgbaImage::from_fn(width, height, |_x, y| {
+            if y % 28 < 14 {
+                let v = ((y * 19) % 256) as u8;
+                Rgba([v, 255 - v, (v / 2), 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
+        });
+
+        let frame2 = RgbaImage::from_fn(width, height, |_x, y| {
+            let src_y = y + shift_amount;
+            if src_y % 28 < 14 {
+                let v = ((src_y * 19) % 256) as u8;
+                Rgba([v, 255 - v, (v / 2), 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
+        });
+
+        let res = find_vertical_shift(&frame1, &frame2, None);
+        assert_eq!(res.delta_y, shift_amount);
+        assert!(res.avg_diff < 0.5);
+    }
+
+    #[test]
+    fn test_find_vertical_shift_with_sticky_header_and_footer() {
+        let width = 300;
+        let height = 420;
+        let shift_amount = 160;
+
+        // Frame 1:
+        // rows 0..30: blue stationary navbar
+        // rows 30..390: content lines
+        // rows 390..420: red stationary footer
+        let frame1 = RgbaImage::from_fn(width, height, |_x, y| {
+            if y < 30 {
+                Rgba([0, 50, 200, 255]) // Sticky navbar
+            } else if y >= 390 {
+                Rgba([200, 50, 0, 255]) // Sticky footer
+            } else if y % 24 < 12 {
+                let v = ((y * 17) % 256) as u8;
+                Rgba([v, v, v, 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
+        });
+
+        // Frame 2:
+        // rows 0..30: still blue stationary navbar
+        // rows 30..390: content lines shifted UP by shift_amount
+        // rows 390..420: still red stationary footer
+        let frame2 = RgbaImage::from_fn(width, height, |_x, y| {
+            if y < 30 {
+                Rgba([0, 50, 200, 255]) // Sticky navbar
+            } else if y >= 390 {
+                Rgba([200, 50, 0, 255]) // Sticky footer
+            } else {
+                let src_y = y + shift_amount;
+                if src_y % 24 < 12 {
+                    let v = ((src_y * 17) % 256) as u8;
+                    Rgba([v, v, v, 255])
+                } else {
+                    Rgba([255, 255, 255, 255])
+                }
+            }
+        });
+
+        let res = find_vertical_shift(&frame1, &frame2, None);
+        assert_eq!(res.delta_y, shift_amount);
+        assert!(res.avg_diff < 1.0);
     }
 
     #[test]

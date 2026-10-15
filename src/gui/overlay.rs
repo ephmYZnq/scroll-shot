@@ -182,15 +182,17 @@ pub fn run_interactive_overlay<C: Connection>(
     let result;
 
     // Initial draw
-    render_composite(
+    render_composite_region(
         &orig_screen,
         &dark_screen,
         &mut frame_buf,
         screen_w as usize,
         screen_h as usize,
         Some(&current_rect),
+        0,
+        screen_h,
     );
-    paint_to_x11(conn, win, gc, screen_w, screen_h, screen.root_depth, &frame_buf)?;
+    paint_to_x11(conn, win, gc, screen_w, screen_h, screen.root_depth, &frame_buf, 0, screen_h)?;
 
     'event_loop: loop {
         conn.flush()?;
@@ -198,7 +200,7 @@ pub fn run_interactive_overlay<C: Connection>(
 
         match event {
             Event::Expose(_) => {
-                paint_to_x11(conn, win, gc, screen_w, screen_h, screen.root_depth, &frame_buf)?;
+                paint_to_x11(conn, win, gc, screen_w, screen_h, screen.root_depth, &frame_buf, 0, screen_h)?;
             }
             Event::ButtonPress(ev) => {
                 if ev.detail == 1 {
@@ -235,6 +237,7 @@ pub fn run_interactive_overlay<C: Connection>(
                         };
                     } else {
                         // Click outside: start new drag selection
+                        let old_rect = current_rect;
                         drag_mode = DragMode::Creating(ev.event_x, ev.event_y);
                         current_rect = CaptureRect {
                             x: ev.event_x,
@@ -242,6 +245,33 @@ pub fn run_interactive_overlay<C: Connection>(
                             width: 1,
                             height: 1,
                         };
+                        let (dirty_y1, dirty_y2) = calc_dirty_y_bounds(
+                            &old_rect,
+                            &current_rect,
+                            screen_w as i32,
+                            screen_h as i32,
+                        );
+                        render_composite_region(
+                            &orig_screen,
+                            &dark_screen,
+                            &mut frame_buf,
+                            screen_w as usize,
+                            screen_h as usize,
+                            Some(&current_rect),
+                            dirty_y1,
+                            dirty_y2,
+                        );
+                        paint_to_x11(
+                            conn,
+                            win,
+                            gc,
+                            screen_w,
+                            screen_h,
+                            screen.root_depth,
+                            &frame_buf,
+                            dirty_y1,
+                            dirty_y2,
+                        )?;
                     }
                 } else if ev.detail == 3 {
                     // Right click: cancel
@@ -250,8 +280,36 @@ pub fn run_interactive_overlay<C: Connection>(
                 }
             }
             Event::MotionNotify(ev) => {
-                let mx = ev.event_x;
-                let my = ev.event_y;
+                if drag_mode == DragMode::None {
+                    continue;
+                }
+
+                let mut latest_mx = ev.event_x;
+                let mut latest_my = ev.event_y;
+                let mut released = false;
+
+                // Drain all queued MotionNotify events to prevent lagging behind mouse movement
+                while let Ok(Some(next_ev)) = conn.poll_for_event() {
+                    match next_ev {
+                        Event::MotionNotify(m) => {
+                            latest_mx = m.event_x;
+                            latest_my = m.event_y;
+                        }
+                        Event::ButtonRelease(r) if r.detail == 1 => {
+                            released = true;
+                            break;
+                        }
+                        Event::KeyPress(k) if k.detail == 9 => {
+                            result = UserAction::Cancel;
+                            break 'event_loop;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let prev_rect = current_rect;
+                let mx = latest_mx;
+                let my = latest_my;
 
                 let mut changed = false;
                 match drag_mode {
@@ -322,16 +380,38 @@ pub fn run_interactive_overlay<C: Connection>(
                     }
                 }
 
-                if changed {
-                    render_composite(
+                if changed && current_rect != prev_rect {
+                    let (dirty_y1, dirty_y2) = calc_dirty_y_bounds(
+                        &prev_rect,
+                        &current_rect,
+                        screen_w as i32,
+                        screen_h as i32,
+                    );
+                    render_composite_region(
                         &orig_screen,
                         &dark_screen,
                         &mut frame_buf,
                         screen_w as usize,
                         screen_h as usize,
                         Some(&current_rect),
+                        dirty_y1,
+                        dirty_y2,
                     );
-                    paint_to_x11(conn, win, gc, screen_w, screen_h, screen.root_depth, &frame_buf)?;
+                    paint_to_x11(
+                        conn,
+                        win,
+                        gc,
+                        screen_w,
+                        screen_h,
+                        screen.root_depth,
+                        &frame_buf,
+                        dirty_y1,
+                        dirty_y2,
+                    )?;
+                }
+
+                if released {
+                    drag_mode = DragMode::None;
                 }
             }
             Event::ButtonRelease(ev) => {
@@ -509,17 +589,53 @@ fn get_toolbar_buttons(
     ]
 }
 
+fn get_affected_y_range(r: &CaptureRect, _screen_w: i32, screen_h: i32) -> (u16, u16) {
+    let ry = r.y as i32;
+    let rh = r.height as i32;
+    let tb_h = 44;
+    let mut tb_y = ry + rh + 16;
+    if tb_y + tb_h > screen_h - 20 {
+        tb_y = ry - tb_h - 16;
+        if tb_y < 20 {
+            tb_y = screen_h - tb_h - 30;
+        }
+    }
+
+    let min_y = (ry - 35).min(tb_y - 12).clamp(0, screen_h) as u16;
+    let max_y = (ry + rh + 35).max(tb_y + tb_h + 12).clamp(0, screen_h) as u16;
+    (min_y, max_y)
+}
+
+fn calc_dirty_y_bounds(
+    rect1: &CaptureRect,
+    rect2: &CaptureRect,
+    screen_w: i32,
+    screen_h: i32,
+) -> (u16, u16) {
+    let (y1_a, y2_a) = get_affected_y_range(rect1, screen_w, screen_h);
+    let (y1_b, y2_b) = get_affected_y_range(rect2, screen_w, screen_h);
+    (y1_a.min(y1_b), y2_a.max(y2_b))
+}
+
 /// Composite darkened screen with bright selection, border, handles, and toolbar
-fn render_composite(
+/// Only restores the specified vertical range [dirty_y1..dirty_y2] to avoid copying full screen buffers.
+fn render_composite_region(
     orig: &[u8],
     dark: &[u8],
     buf: &mut [u8],
     screen_w: usize,
     screen_h: usize,
     rect: Option<&CaptureRect>,
+    dirty_y1: u16,
+    dirty_y2: u16,
 ) {
-    // 1. Reset to darkened screen
-    buf.copy_from_slice(dark);
+    // 1. Reset only dirty rows to darkened screen
+    let row_stride = screen_w * 4;
+    let start_byte = dirty_y1 as usize * row_stride;
+    let end_byte = (dirty_y2 as usize * row_stride).min(buf.len());
+    if start_byte < end_byte {
+        buf[start_byte..end_byte].copy_from_slice(&dark[start_byte..end_byte]);
+    }
 
     let Some(r) = rect else { return };
     if r.width < 5 || r.height < 5 {
@@ -796,7 +912,8 @@ fn set_pixel(buf: &mut [u8], w: usize, h: usize, x: usize, y: usize, color: [u8;
     }
 }
 
-/// Send image buffer to X11 window in scanline bands to stay safely within X11 request length limits
+/// Send image buffer to X11 window in scanline bands to stay safely within X11 request length limits.
+/// Only scanlines in [min_y, max_y) are sent to minimize X11 data transfer.
 fn paint_to_x11<C: Connection>(
     conn: &C,
     win: Window,
@@ -805,15 +922,23 @@ fn paint_to_x11<C: Connection>(
     height: u16,
     depth: u8,
     data: &[u8],
+    min_y: u16,
+    max_y: u16,
 ) -> Result<(), Box<dyn Error>> {
     let w = width as usize;
-    let band_height = 80; // Send 80 rows per request (safely under 256K words limit)
+    let band_height = 40; // Send 40 rows per request (safely under 256K words limit)
 
-    let mut y = 0;
-    while y < height as usize {
-        let chunk_h = band_height.min(height as usize - y);
+    let y_start = min_y.min(height) as usize;
+    let y_end = max_y.min(height) as usize;
+
+    let mut y = y_start;
+    while y < y_end {
+        let chunk_h = band_height.min(y_end - y);
         let start_byte = y * row_stride(w);
         let end_byte = start_byte + chunk_h * row_stride(w);
+        if end_byte > data.len() {
+            break;
+        }
         let chunk_data = &data[start_byte..end_byte];
 
         conn.put_image(
@@ -838,4 +963,60 @@ fn paint_to_x11<C: Connection>(
 #[inline(always)]
 fn row_stride(w: usize) -> usize {
     w * 4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calc_dirty_y_bounds_clamping() {
+        let r1 = CaptureRect {
+            x: 100,
+            y: 100,
+            width: 200,
+            height: 150,
+        };
+        let r2 = CaptureRect {
+            x: 100,
+            y: 120,
+            width: 200,
+            height: 150,
+        };
+        let (y1, y2) = calc_dirty_y_bounds(&r1, &r2, 1920, 1080);
+        assert!(y1 <= 100);
+        assert!(y2 >= 120 + 150);
+        assert!(y2 <= 1080);
+    }
+
+    #[test]
+    fn test_render_composite_region_dirty_slice() {
+        let w = 100;
+        let h = 100;
+        let orig = vec![255u8; w * h * 4];
+        let dark = vec![50u8; w * h * 4];
+        let mut buf = vec![0u8; w * h * 4];
+
+        let rect = CaptureRect {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 30,
+        };
+
+        // Render region [10..60]
+        render_composite_region(&orig, &dark, &mut buf, w, h, Some(&rect), 10, 60);
+
+        // Scanlines before 10 should remain unchanged (0)
+        assert_eq!(buf[0], 0);
+        // Scanlines in dirty region outside rect should be dark (50)
+        let dark_idx = (15 * w + 5) * 4;
+        assert_eq!(buf[dark_idx], 50);
+        // Pixels inside rect should be orig (255)
+        let rect_idx = (25 * w + 20) * 4;
+        assert_eq!(buf[rect_idx], 255);
+        // Scanlines after 60 should remain unchanged (0)
+        let untouched_idx = (70 * w + 5) * 4;
+        assert_eq!(buf[untouched_idx], 0);
+    }
 }

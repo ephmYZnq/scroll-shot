@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Binary Size](https://img.shields.io/badge/Binary%20Size-~1.9MB-blue.svg)](https://github.com/ephmYZnq/scroll-shot/releases)
 
-[English](README.md) | [简体中文](README_zh.md) | [🚀 直接下载 v0.3.0 发行版](https://github.com/ephmYZnq/scroll-shot/releases/latest)
+[English](README.md) | [简体中文](README_zh.md) | [🚀 直接下载 v0.3.1 发行版](https://github.com/ephmYZnq/scroll-shot/releases/latest)
 
 </div>
 

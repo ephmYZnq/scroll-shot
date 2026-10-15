@@ -311,16 +311,65 @@ pub fn run_annotator<C: Connection>(
             }
             Event::MotionNotify(ev) => {
                 if drag_start.is_some() {
-                    let mx = ev.event_x as i32;
-                    let my = ev.event_y as i32;
+                    let mut latest_mx = ev.event_x as i32;
+                    let mut latest_my = ev.event_y as i32;
+                    let mut released = false;
+
+                    while let Ok(Some(next_ev)) = conn.poll_for_event() {
+                        match next_ev {
+                            Event::MotionNotify(m) => {
+                                latest_mx = m.event_x as i32;
+                                latest_my = m.event_y as i32;
+                            }
+                            Event::ButtonRelease(r) if r.detail == 1 => {
+                                released = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let mx = latest_mx;
+                    let my = latest_my;
                     let img_x = mx;
                     let img_y = my - TOOLBAR_H as i32 + scroll_y;
                     current_pos = Some((img_x, img_y));
 
-                    let _ = redraw(
-                        conn, &mut win_buf, &base_image, &annotations, current_tool,
-                        current_color_idx, drag_start, current_pos, scroll_y, active_text.as_ref(),
-                    );
+                    if released {
+                        if let (Some((x1, y1)), Some((x2, y2))) = (drag_start.take(), current_pos.take()) {
+                            let color = PALETTE[current_color_idx];
+                            if (x1 - x2).abs() > 3 || (y1 - y2).abs() > 3 {
+                                match current_tool {
+                                    Tool::Rect => {
+                                        annotations.push(Annotation::Rect {
+                                            x1, y1, x2, y2, color, thickness: 3,
+                                        });
+                                    }
+                                    Tool::Arrow => {
+                                        annotations.push(Annotation::Arrow { x1, y1, x2, y2, color });
+                                    }
+                                    Tool::Mosaic => {
+                                        annotations.push(Annotation::Mosaic {
+                                            x1, y1, x2, y2, block_size: 10,
+                                        });
+                                    }
+                                    Tool::Highlight => {
+                                        annotations.push(Annotation::Highlight { x1, y1, x2, y2, color });
+                                    }
+                                    Tool::Step | Tool::Text => {}
+                                }
+                            }
+                        }
+                        let _ = redraw(
+                            conn, &mut win_buf, &base_image, &annotations, current_tool,
+                            current_color_idx, None, None, scroll_y, active_text.as_ref(),
+                        );
+                    } else {
+                        let _ = redraw(
+                            conn, &mut win_buf, &base_image, &annotations, current_tool,
+                            current_color_idx, drag_start, current_pos, scroll_y, active_text.as_ref(),
+                        );
+                    }
                 }
             }
             Event::ButtonRelease(ev) => {

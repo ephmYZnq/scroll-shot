@@ -252,10 +252,12 @@ pub fn record_manual_scroll<C: Connection>(
         prev_sample = curr_frame.clone();
 
         // Stitch a keyframe when:
-        // 1. Content has moved a substantial step (>= 60px) AND the screen has paused/settled for >= 2 ticks (~50ms)
-        // OR 2. Content has moved more than 60% of viewport height (safety trigger to avoid losing overlap)
-        let should_stitch = (match_res.delta_y >= 60 && still_ticks >= 2)
-            || (match_res.delta_y >= rect.height as u32 * 6 / 10);
+        // 1. Content has moved a substantial step (>= min_settled_shift) AND the screen has paused/settled for >= 2 ticks (~50ms)
+        // OR 2. Content has moved more than 55% of viewport height (safety trigger to avoid losing overlap during rapid continuous scrolling)
+        let min_settled_shift = (rect.height as u32 * 8 / 100).clamp(25, 45);
+        let max_overlap_shift = (rect.height as u32 * 55 / 100).max(60);
+        let should_stitch = (match_res.delta_y >= min_settled_shift && still_ticks >= 2)
+            || (match_res.delta_y >= max_overlap_shift);
 
         if should_stitch {
             canvas.splice_keyframe(&curr_frame, match_res.delta_y);
